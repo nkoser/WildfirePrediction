@@ -1,0 +1,32 @@
+# B2: raeumliche Baseline. Ein U-Net ueber 33x33-Patches mit fuenf
+# gestapelten Zeitscheiben. Verlust und Auswertung am Zentrumspixel,
+# damit der Vergleich mit B0 und B1 direkt ist.
+run_id: b2_unet_temporal
+split: temporal
+patch: 33
+lookback: 30
+cooldown: 7
+n_slices: 5
+horizon: 100
+width: 48
+init_bias: -7.0
+
+batch_size: 64
+epochs: 8
+lr: 0.001
+weight_decay: 0.0001
+workers: 4
+amp: false            # erst nach numerischem Vergleich mit FP32 einschalten
+seed: 20260827
+
+# Begrenzung je Epoche. Nicht der volle Trainingssatz: bei rund 9 Mio.
+# nutzbaren Landmarks und etwa 2000 Samples/s waere eine Epoche ueber eine
+# Stunde lang. 1,5 Mio. je Epoche kosten rund 12 Minuten und sehen ueber
+# acht Epochen trotzdem den groessten Teil der Daten - bei jeweils neu
+# gezogener Teilmenge waere es der ganze Satz.
+limit_train: 1500000
+limit_val: 300000
+
+early_stopping:
+  metric: nll         # vorab festgelegt, nicht nachtraeglich gewaehlt
+  patience: 3

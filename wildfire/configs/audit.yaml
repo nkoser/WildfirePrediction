@@ -1,0 +1,42 @@
+# Konfiguration des MPCFire-Datenaudits.
+# Der Rohdatenpfad wird AUSSCHLIESSLICH lesend angefasst.
+
+raw_data: /firedata
+dataset_root: /firedata/MPCFire
+experiment_root: /data/Wildfire
+
+seed: 20260827
+
+modalities:
+  - DEMs
+  - ERA5
+  - FWI
+  - MCD09CMG
+  - MCD09GA
+  - MCD11A1
+  - MCD12Q1
+  - MCD14A1
+  - MCD15A3H
+  - NDVI_EVI
+  - OSMs
+  - VPD
+  - Worldpop
+
+caches: [cache_A, cache_G, cache_H, cache_Y]
+
+# Das Label-Modalitaet (Active Fire) ist klein genug, um sie vollstaendig
+# auszuwerten; alle anderen werden gesampled.
+label_modality: MCD14A1
+
+sampling:
+  # Stufe 1 (tar-Index): alle Jahre aller Modalitaeten, nur Header.
+  tar_index_all_years: true
+  # Stufe 2 (Raster-Header): so viele Jahre je Modalitaet ...
+  header_years: [2000, 2012, 2023, 2025]
+  # ... und so viele GeoTIFFs je (Modalitaet, Jahr).
+  header_files_per_year: 3
+  # Stufe 2b: Vollstatistik (min/max/nodata-Anteil) auf so vielen Rastern
+  # je Modalitaet. Ein Raster ~ 5000x5000 int16 -> ca. 50 MB im RAM.
+  stats_rasters_per_modality: 6
+  # Stufe 4 (HDF5): Anzahl zufaellig gezogener Fenster fuer Wertestatistik.
+  h5_sample_windows: 256

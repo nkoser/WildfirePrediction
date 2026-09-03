@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Audit-Logs und lokale Slurm-Ausgaben
+logs/
+slurm-*.out
+slurm-*.err
