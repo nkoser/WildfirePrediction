@@ -10,6 +10,19 @@ gestapelt: bei K=5 die Tage t-28, t-21, t-14, t-7 und t. Das ist die
 B3 vorbehalten - nur so misst der Vergleich zwischen beiden den Beitrag der
 zeitlichen Modellierung und nicht einen Nebeneffekt.
 
+**Lesereihenfolge.** Ein Patch kostet 5 Zeitscheiben aus einem 340-GB-Speicher.
+Gemessen auf dem Wuerfel, ein Prozess:
+
+    zufaellig               42,5 Beispiele/s
+    nach Tag sortiert      159,3 Beispiele/s     3,7x
+    chunked shuffle        220,8 Beispiele/s     5,2x
+
+Der Grund ist nicht die Bandbreite, sondern das Suchen: Bei ``shuffle=True``
+liegt jeder Zugriff woanders im Wuerfel, und der Seitencache des Systems wird
+nie ein zweites Mal getroffen. Es fehlt also kein Cache - es fehlt Lokalitaet.
+``ChunkedShuffleSampler`` stellt sie her, ohne die Durchmischung praktisch
+aufzugeben.
+
 **Beobachtungsmaske als Kanal.** Fuer die gesperrten Kanaele ist der Wert
 an den letzten C Tagen null UND unbeobachtet. Eine Null allein waere ein
 gueltiger Messwert. Deshalb wird je Zeitscheibe ein Maskenkanal angehaengt,
@@ -22,9 +35,50 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 from wildfire.data.dataset import LOCKED_CHANNELS, LandmarkDataset
+
+
+
+class ChunkedShuffleSampler(Sampler):
+    """Mischt in Bloecken statt global - fuer Lokalitaet beim Lesen.
+
+    Vollstaendiges Mischen zerstreut jeden Zugriff ueber den ganzen Wuerfel.
+    Vollstaendige Sortierung waere schnell, wuerde aber aufeinanderfolgende
+    Batches aus demselben Tag ziehen und damit die Gradienten korrelieren.
+
+    Der Kompromiss: nach Tag sortieren, in Bloecke von ``chunk`` Landmarks
+    schneiden, die BLOCKREIHENFOLGE mischen und INNERHALB jedes Blocks noch
+    einmal mischen. Ein Block von 20 000 Landmarks umspannt rund 30 Kalendertage,
+    ein Batch daraus ist also weiterhin zeitlich gestreut - aber alle Lesezugriffe
+    eines Blocks fallen in einen engen Bereich des Wuerfels und treffen den
+    Seitencache.
+
+    Jede Epoche mischt anders (``set_epoch`` bzw. automatisches Hochzaehlen).
+    """
+
+    def __init__(self, order, chunk: int = 20000, seed: int = 0) -> None:
+        self.order = np.asarray(order, dtype=np.int64)
+        self.chunk = int(chunk)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __len__(self) -> int:
+        return int(self.order.size)
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch)
+        starts = np.arange(0, self.order.size, self.chunk)
+        rng.shuffle(starts)
+        for s0 in starts:
+            block = self.order[s0:s0 + self.chunk].copy()
+            rng.shuffle(block)
+            yield from block.tolist()
+        self.epoch += 1
 
 
 class PatchDataset(Dataset):
@@ -50,6 +104,16 @@ class PatchDataset(Dataset):
             self.subset = np.sort(rng.choice(n, limit, replace=False))
         else:
             self.subset = np.arange(n)
+
+    def day_order(self) -> np.ndarray:
+        """Eigene Indizes, nach Kalendertag des Landmarks sortiert.
+
+        Stabil sortiert, damit bei gleichem Tag die Reihenfolge im Wuerfel
+        erhalten bleibt - auch das ist Lokalitaet.
+        """
+        days = self.base.t[self.base.usable[self.subset]] \
+            if self.base.usable is not None else self.base.t[self.subset]
+        return np.argsort(days, kind="mergesort").astype(np.int64)
 
     @property
     def in_channels(self) -> int:

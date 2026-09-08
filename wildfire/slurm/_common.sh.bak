@@ -1,0 +1,60 @@
+# Wird von allen Audit-sbatch-Skripten gesourced.
+# Haelt Umgebung, Pfade und Logging an einer Stelle.
+#
+# ACHTUNG, HOST- GEGEN CONTAINER-PFAD:
+# --output und --error werden von Slurm auf dem HOST aufgeloest, bevor der
+# Container existiert. Dort muss also der Host-Pfad stehen:
+#     /raid/data/nik/Wildfire/logs/%x_%j.out
+# NICHT /data/Wildfire/logs/... - dieses Verzeichnis gibt es nur IM Container.
+# Steht dort der Container-Pfad, kann slurmd die Ausgabedatei nicht anlegen,
+# der Job stirbt sofort beim Start, verschwindet aus der Queue und
+# hinterlaesst kein Log - weil das Log genau das ist, was fehlschlaegt.
+# Alles Uebrige in diesen Skripten (EXP, CONFIG, Datenpfade) laeuft dagegen
+# IM Container und benutzt korrekt /data.
+set -uo pipefail
+
+REPO="/workspace/WildfirePrediction"
+EXP="/data/Wildfire"
+CONFIG="${CONFIG:-$REPO/wildfire/configs/audit.yaml}"
+
+# Basis-Interpreter: braucht numpy, h5py und scipy. Alles Weitere (rasterio,
+# pyproj) liegt persistent in $DEPS und wird ueber PYTHONPATH vorangestellt --
+# gleiche Strategie wie AneuG/setup_a1_deps.sbatch.
+#
+# Der Interpreter wird NICHT hart verdrahtet: je nach Container-Image liegt
+# conda unter /miniconda3 oder /opt/miniconda3 und die Envs heissen anders.
+# Mit  PY=/pfad/zu/python sbatch <skript>  laesst sich die Wahl uebersteuern.
+DEPS="${DEPS:-$EXP/pydeps}"
+
+pick_python () {
+    local cand
+    for cand in "$@"; do
+        [ -x "$cand" ] || continue
+        PYTHONPATH="$DEPS" "$cand" -c \
+            "import numpy, h5py, scipy" >/dev/null 2>&1 && { echo "$cand"; return 0; }
+    done
+    return 1
+}
+
+if [ -z "${PY:-}" ]; then
+    PY=$(pick_python \
+            /miniconda3/envs/vmtk_2/bin/python \
+            /opt/miniconda3/envs/sr_env/bin/python \
+            /miniconda3/bin/python \
+            /opt/miniconda3/bin/python \
+            $(ls -d /miniconda3/envs/*/bin/python /opt/miniconda3/envs/*/bin/python 2>/dev/null) \
+            /usr/bin/python3) || {
+        echo "ABBRUCH: kein Python mit numpy+h5py+scipy gefunden." >&2
+        echo "  Vorhandene Interpreter:" >&2
+        ls -d /miniconda3/envs/*/bin/python /opt/miniconda3/envs/*/bin/python 2>/dev/null >&2
+        echo "  Abhilfe: 00_audit_env.sbatch anpassen oder PY=<pfad> setzen." >&2
+        exit 2
+    }
+fi
+export PYTHONPATH="$DEPS:$REPO:${PYTHONPATH:-}"
+export PYTHONUNBUFFERED=1
+
+mkdir -p "$EXP/logs" "$EXP/data_manifests" "$EXP/reports" "$EXP/figures"
+
+echo "[$(date -u +%FT%TZ)] host=$(hostname) job=${SLURM_JOB_ID:-interactive} py=$PY"
+echo "[cfg] $CONFIG"

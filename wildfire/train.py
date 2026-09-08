@@ -30,7 +30,7 @@ from wildfire.eval.metrics import evaluate
 from wildfire.experiment import register
 from wildfire.models.losses import discrete_survival_nll
 from wildfire.models.nets import SpatialHazardUNet
-from wildfire.models.torch_data import PatchDataset
+from wildfire.models.torch_data import ChunkedShuffleSampler, PatchDataset
 
 
 def collate_eval(model, loader, device, horizon):
@@ -76,7 +76,17 @@ def main() -> None:
 
     dl = dict(batch_size=int(mc["batch_size"]), num_workers=int(mc["workers"]),
               pin_memory=device.type == "cuda", persistent_workers=int(mc["workers"]) > 0)
-    tr = DataLoader(ds_tr, shuffle=True, drop_last=True, **dl)
+    # Gemessen auf dem Wuerfel: zufaelliges Mischen kostet Faktor 5 gegenueber
+    # blockweisem (42,5 gegen 220,8 Beispiele/s je Prozess). shuffle_chunk=0
+    # schaltet auf das alte Verhalten zurueck.
+    chunk = int(mc.get("shuffle_chunk", 0))
+    if chunk > 0:
+        sampler = ChunkedShuffleSampler(ds_tr.day_order(), chunk, int(mc["seed"]))
+        tr = DataLoader(ds_tr, sampler=sampler, drop_last=True, **dl)
+        print(f"[train] chunked shuffle, Bloecke à {chunk:,}", flush=True)
+    else:
+        sampler = None
+        tr = DataLoader(ds_tr, shuffle=True, drop_last=True, **dl)
     va = DataLoader(ds_va, shuffle=False, **dl)
 
     model = SpatialHazardUNet(ds_tr.in_channels, horizon=int(mc["horizon"]),
@@ -99,16 +109,45 @@ def main() -> None:
                    notes=f"{n_par} Parameter, {ds_tr.in_channels} Eingabekanaele")
 
     best, bad, history = float("inf"), 0, []
+
+    def save_manifest(finished: bool) -> None:
+        """Zwischenstand sichern - NICHT erst am Ende.
+
+        Bei 2,6 Stunden je Epoche und 12 Stunden Zeitlimit wird ein voller Lauf
+        vom Scheduler abgeschnitten. Die Checkpoints ueberleben das (sie werden
+        je Epoche geschrieben), das Manifest bislang nicht - damit waeren die
+        Metriken nur noch im Log gewesen und haetten von Hand uebertragen
+        werden muessen. Genau das soll nicht passieren.
+        """
+        write_manifest(cfg, f"m2_{mc['run_id']}", args.model_config,
+                       {"model_config": mc, "n_parameters": n_par,
+                        "in_channels": ds_tr.in_channels, "device": str(device),
+                        "n_train": len(ds_tr), "n_val": len(ds_va),
+                        "history": history, "best": best,
+                        "completed": finished,
+                        "epochs_planned": int(mc["epochs"]),
+                        "checkpoint": str(ckpt_dir / "best.pt")})
+
     for ep in range(int(mc["epochs"])):
+        if sampler is not None:
+            sampler.set_epoch(ep)          # jede Epoche anders mischen
         model.train()
         t0, run, seen = time.perf_counter(), 0.0, 0
         for i, b in enumerate(tr):
             x = b["x"].to(device, non_blocking=True)
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=use_amp):
+                # Das Ziehungsgewicht MUSS mit. Ohne es trainiert B2 auf der
+                # angereicherten Stichprobe (9,15 % Ereignisrate), als waere das
+                # die Wirklichkeit (1,27 Promille). Der Logit liegt dann um
+                # +4,374 zu hoch, die Hazards um Faktor 79 - die Rangordnung
+                # bleibt davon unberuehrt (AUC sah normal aus), die
+                # Kalibrierung nicht: val NLL 0,0697 statt der 0,0125 von B4.
+                # B4 hat das von Anfang an richtig gemacht, B2 nicht; damit war
+                # die Ablation zwischen beiden wertlos.
                 loss = discrete_survival_nll(
                     model.centre_logits(x), b["event"].to(device),
-                    b["t_event"].to(device))
+                    b["t_event"].to(device), b["weight"].to(device))
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
             gn = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -146,8 +185,10 @@ def main() -> None:
         else:
             bad += 1
             if bad >= int(mc["early_stopping"]["patience"]):
+                save_manifest(finished=True)
                 print(f"[train] Early Stopping nach Epoche {ep}")
                 break
+        save_manifest(finished=False)
 
     register(exp, str(mc["run_id"]), "model", args.model_config,
              split=mc["split"], seed=int(mc["seed"]), status="completed",
@@ -155,12 +196,7 @@ def main() -> None:
              metrics_path=str(exp / "data_manifests" / f"m2_{mc['run_id']}.json"),
              notes=f"beste {mc['early_stopping']['metric']}={best:.6f} nach {len(history)} Epochen",
              extra={"best_val": best, "epochs_run": len(history)})
-    write_manifest(cfg, f"m2_{mc['run_id']}", args.model_config,
-                   {"model_config": mc, "n_parameters": n_par,
-                    "in_channels": ds_tr.in_channels, "device": str(device),
-                    "n_train": len(ds_tr), "n_val": len(ds_va),
-                    "history": history, "best": best,
-                    "checkpoint": str(ckpt_dir / "best.pt")})
+    save_manifest(finished=True)
 
 
 if __name__ == "__main__":

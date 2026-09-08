@@ -103,7 +103,8 @@ class CubeReader:
 class LandmarkDataset:
     def __init__(self, exp: Path, split: str, part: str, patch: int = 33,
                  lookback: int = 30, cooldown: int = 7,
-                 locked: tuple[int, ...] = LOCKED_CHANNELS) -> None:
+                 locked: tuple[int, ...] = LOCKED_CHANNELS,
+                 mask: str | None = None) -> None:
         self.exp = Path(exp)
         self.half = patch // 2
         self.L = lookback
@@ -115,7 +116,13 @@ class LandmarkDataset:
         self.event_id = z["event_id"]; self.weight = z["weight"]
         self.year = z["year"]
         self.cube = CubeReader(self.exp)
-        self.valid = np.load(self.exp / "derived_data" / "masks" / "valid.npy")
+        # Standard ist die Beobachtungsmaske der Labelquelle: Regionen ohne
+        # jede Meldung liefern keine Negative, sondern unbeobachtete Zeit.
+        if mask is None:
+            m = self.exp / "derived_data" / "masks" / "observed_nfdb.npy"
+            mask = m.name if m.exists() else "valid.npy"
+        self.mask_name = mask
+        self.valid = np.load(self.exp / "derived_data" / "masks" / mask)
         # Nur Landmarks, deren gesamtes Historienfenster im Wuerfel liegt.
         # Vektorisiert ueber eine Verfuegbarkeitsmaske statt einer Schleife
         # mit Mengenabfragen - bei Millionen Zeilen ist das der Unterschied

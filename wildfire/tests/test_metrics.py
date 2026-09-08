@@ -219,3 +219,39 @@ def test_calibration_of_constant_predictor_is_defined():
     cal = M.calibration(np.full((n, H), 0.0), ev, t_ev, tau=10)
     assert np.isfinite(cal["ece"]), "ECE darf bei konstantem Praediktor nicht nan sein"
     assert cal["ece"] == pytest.approx(0.05, abs=1e-6)
+
+
+def test_concordance_constant_predictor_is_half():
+    """Gleiche Regressionsfalle wie bei der AUC: Bei identischen Scores darf
+    die Eingabereihenfolge das Ergebnis nicht bestimmen."""
+    from wildfire.eval.metrics import concordance_index
+    rng = np.random.default_rng(0)
+    n = 400
+    event = np.zeros(n, int); event[:120] = 1          # Positive zuerst, wie in den Dateien
+    t_event = rng.integers(1, 30, n)
+    c, pairs = concordance_index(np.full(n, 0.5), event, t_event)
+    assert pairs > 0
+    assert abs(c - 0.5) < 1e-12
+
+
+def test_concordance_perfect_and_inverted():
+    from wildfire.eval.metrics import concordance_index
+    # frueheres Ereignis = hoeheres Risiko  -> C = 1
+    t_event = np.array([1, 2, 3, 4, 5])
+    event = np.ones(5, int)
+    risk = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
+    assert abs(concordance_index(risk, event, t_event)[0] - 1.0) < 1e-12
+    assert abs(concordance_index(-risk, event, t_event)[0] - 0.0) < 1e-12
+
+
+def test_concordance_censored_are_comparable_only_as_later():
+    """Ein Zensierter bei t=100 ist mit jedem frueheren Ereignis vergleichbar,
+    aber nie selbst der 'frueher gezuendete' Partner."""
+    from wildfire.eval.metrics import concordance_index
+    t_event = np.array([10, 100])
+    event = np.array([1, 0])
+    assert abs(concordance_index(np.array([1.0, 0.0]), event, t_event)[0] - 1.0) < 1e-12
+    assert abs(concordance_index(np.array([0.0, 1.0]), event, t_event)[0] - 0.0) < 1e-12
+    # zwei Zensierte allein ergeben kein vergleichbares Paar
+    c, pairs = concordance_index(np.array([1.0, 0.0]), np.array([0, 0]), t_event)
+    assert pairs == 0 and np.isnan(c)

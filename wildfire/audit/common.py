@@ -42,9 +42,20 @@ def load_config(path: str | os.PathLike) -> dict[str, Any]:
     try:
         import yaml
 
-        return yaml.safe_load(text)
+        cfg = yaml.safe_load(text)
     except ImportError:
-        return _mini_yaml(text)
+        cfg = _mini_yaml(text)
+
+    # Der Rohdatenpfad haengt davon ab, WO gerechnet wird: In dieser Session
+    # liegt er unter /firedata, in einem pyxis-Container muss er erst gemountet
+    # werden - und zwar an eine Stelle, die es im Image sicher gibt. Statt zwei
+    # Configs zu pflegen, ueberschreibt eine Umgebungsvariable den Wert. Sie
+    # geht ueber write_manifest in die Provenienz ein, der Lauf bleibt also
+    # nachvollziehbar.
+    override = os.environ.get("WF_DATASET_ROOT")
+    if override:
+        cfg["dataset_root"] = override
+    return cfg
 
 
 def _mini_yaml(text: str) -> dict[str, Any]:
@@ -127,7 +138,8 @@ def config_hash(path: str | os.PathLike) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
 
 
-def provenance(config_path: str | os.PathLike, stage: str) -> dict[str, Any]:
+def provenance(config_path: str | os.PathLike, stage: str,
+               cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "stage": stage,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -135,6 +147,12 @@ def provenance(config_path: str | os.PathLike, stage: str) -> dict[str, Any]:
         "git_dirty": bool(_run(["git", "status", "--porcelain"])),
         "config_path": str(config_path),
         "config_hash": config_hash(config_path),
+        # Der Rohdatenpfad kann per WF_DATASET_ROOT umgesetzt werden, je
+        # nachdem ob interaktiv oder im pyxis-Container gerechnet wird. Der
+        # tatsaechlich benutzte Wert gehoert deshalb in die Provenienz -
+        # sonst laesst sich ein Lauf nicht rekonstruieren.
+        "dataset_root_used": (cfg or {}).get("dataset_root"),
+        "dataset_root_override": os.environ.get("WF_DATASET_ROOT"),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID", "interactive-cpu"),
         "hostname": socket.gethostname(),
         "python": sys.version.split()[0],
@@ -150,7 +168,7 @@ def write_manifest(
     out_dir = Path(cfg["experiment_root"]) / "data_manifests"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{stage}.json"
-    doc = {"provenance": provenance(config_path, stage), **payload}
+    doc = {"provenance": provenance(config_path, stage, cfg), **payload}
     tmp = out.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=2, sort_keys=False, default=str))
     tmp.replace(out)

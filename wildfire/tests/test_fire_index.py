@@ -29,6 +29,12 @@ class FakeIndex(FireIndex):
             [ign_pairs[i][0] * DAY_BITS + ign_pairs[i][1] for i in order], np.int64)
         self.ign_events = np.array(
             [(events or list(range(len(ign_pairs))))[i] for i in order], np.int32)
+        # Seit der Umstellung auf gemeldete Braende traegt der Index auch
+        # Ursache und Flaeche. Der Doppelgaenger muss dieselbe Schnittstelle
+        # anbieten, sonst prueft er ein anderes Objekt als das echte.
+        self.ign_cause = np.zeros(self.ign_keys.size, np.int8)
+        self.ign_size = np.full(self.ign_keys.size, np.nan, np.float32)
+        self.label_source = "test"
 
 
 def brute_fire_between(pairs, p, lo, hi):
@@ -58,7 +64,7 @@ def test_queries_match_bruteforce(seed):
                     for p, t in zip(qp, qt)])
     assert np.array_equal(got, exp)
 
-    day, _, found = idx.next_ignition(qp, qt)
+    day, _, _, found = idx.next_ignition(qp, qt)
     for i, (p, t) in enumerate(zip(qp.tolist(), qt.tolist())):
         e = brute_next_ign(ign, p, t)
         if e is None:
@@ -71,7 +77,7 @@ def test_empty_pixel_never_matches():
     idx = FakeIndex(50, [(10, 5)], [(10, 5)])
     q = np.array([999], np.int64)
     assert not idx.has_fire_between(q, np.array([0]), np.array([100]))[0]
-    _, _, found = idx.next_ignition(q, np.array([0]))
+    _, _, _, found = idx.next_ignition(q, np.array([0]))
     assert not found[0]
 
 
@@ -79,9 +85,9 @@ def test_next_ignition_is_strictly_after_t():
     """Eine Zuendung AM Landmarktag darf nicht als zukuenftig zaehlen."""
     idx = FakeIndex(50, [(7, 20)], [(7, 20)])
     q = np.array([7], np.int64)
-    _, _, found = idx.next_ignition(q, np.array([20], np.int64))
+    _, _, _, found = idx.next_ignition(q, np.array([20], np.int64))
     assert not found[0], "Zuendung bei t selbst wurde als zukuenftig gewertet"
-    day, _, found = idx.next_ignition(q, np.array([19], np.int64))
+    day, _, _, found = idx.next_ignition(q, np.array([19], np.int64))
     assert found[0] and day[0] == 20
 
 

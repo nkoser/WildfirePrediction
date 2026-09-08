@@ -130,3 +130,74 @@ def test_unet_can_overfit_a_single_example():
         loss.backward(); opt.step()
         first = first if first is not None else loss.item()
     assert loss.item() < first * 0.2, (first, loss.item())
+
+
+def test_chunked_shuffle_sampler_is_a_permutation():
+    """Blockweises Mischen darf kein Beispiel verlieren oder doppeln."""
+    from wildfire.models.torch_data import ChunkedShuffleSampler
+    order = np.arange(1000)
+    s = ChunkedShuffleSampler(order, chunk=137, seed=3)
+    out = list(s)
+    assert len(out) == 1000 == len(s)
+    assert sorted(out) == list(range(1000))
+
+
+def test_chunked_shuffle_differs_per_epoch_but_stays_local():
+    from wildfire.models.torch_data import ChunkedShuffleSampler
+    order = np.arange(4000)
+    s = ChunkedShuffleSampler(order, chunk=500, seed=1)
+    e0 = list(s)
+    s.set_epoch(1)
+    e1 = list(s)
+    assert e0 != e1                                    # andere Reihenfolge
+    assert sorted(e0) == sorted(e1)                    # gleiche Menge
+    # Lokalitaet: aufeinanderfolgende Indizes liegen im Mittel naeher beieinander
+    # als bei globalem Mischen, wo der Erwartungswert n/3 betraegt.
+    step = np.abs(np.diff(np.array(e0)))
+    assert step.mean() < len(order) / 3
+
+
+def test_chunked_shuffle_handles_ragged_last_block():
+    from wildfire.models.torch_data import ChunkedShuffleSampler
+    s = ChunkedShuffleSampler(np.arange(10), chunk=4, seed=0)
+    assert sorted(s) == list(range(10))
+
+
+def test_weights_shift_hazard_scale_not_ranking():
+    """Der Fehler, der den ersten B2-Lauf unbrauchbar machte.
+
+    train.py rief den Verlust ohne das Ziehungsgewicht auf, mlp_survival.py mit.
+    B2 lernte damit die Praevalenz der angereicherten STICHPROBE (9,15 %) statt
+    die der Grundgesamtheit (1,27 Promille). Der Effekt ist ein gleichmaessiger
+    Versatz im Logit: Die Rangordnung bleibt erhalten - die AUC sah deshalb
+    normal aus - aber die Kalibrierung ist zerstoert, val NLL 0,0697 statt 0,0125.
+
+    Entscheidend fuer den Test ist ein GETEILTER Parametersatz. Bekaeme jedes
+    Beispiel eigene Logits, koennte es seinen Ausgang exakt treffen und die
+    Gewichte blieben wirkungslos - so wie in der ersten Fassung dieses Tests.
+    """
+    torch.manual_seed(0)
+    N, H = 4096, 20
+    event = (torch.rand(N) < 0.3).float()
+    t_event = torch.randint(1, H + 1, (N,))
+    # Positive vertreten nur sich selbst, Negative je 50 nicht gezogene
+    weight = torch.where(event > 0, torch.ones(N), torch.full((N,), 50.0))
+
+    def fit(w):
+        shared = torch.zeros(1, H, requires_grad=True)      # EIN Hazardverlauf
+        opt = torch.optim.Adam([shared], lr=0.1)
+        for _ in range(400):
+            opt.zero_grad()
+            discrete_survival_nll(shared.expand(N, H), event, t_event, w).backward()
+            opt.step()
+        return float(torch.sigmoid(shared.detach()).mean())
+
+    h_weighted, h_plain = fit(weight), fit(None)
+    # Ungewichtet landet der Hazard deutlich zu hoch - genau der B2-Fehler.
+    assert h_plain > 3 * h_weighted, (h_plain, h_weighted)
+
+    # Und die effektive Praevalenz erklaert den Faktor: ungewichtet 0,3,
+    # gewichtet rund 0,3/(0,3 + 50*0,7).
+    p_plain = float(event.mean())
+    p_weighted = float((weight * event).sum() / weight.sum())
+    assert p_plain > 20 * p_weighted

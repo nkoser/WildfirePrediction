@@ -1,13 +1,22 @@
 #!/bin/bash
+# BRAUCHT DIE ROHDATEN. Auf dem Host liegen sie unter /cold/Niklas/FireData;
+# in dieser interaktiven Session sind sie als /firedata sichtbar. Fuer einen
+# pyxis-Container muss die HOST-Quelle stehen - ein Mount von /firedata
+# scheiterte, weil es diesen Pfad auf dem Host nicht gibt.
+#
+# Ziel ist /mnt und nicht /firedata: Enroot legt fehlende Mountpunkte im Image
+# nicht an, und ob das SR-Image ein /firedata hat, ist ungeprueft. /mnt gibt es
+# in jedem Image. Passend dazu setzt WF_DATASET_ROOT den Rohdatenpfad um; der
+# Wert landet ueber write_manifest in der Provenienz.
 #SBATCH --job-name=wf_cube_array
 #SBATCH --array=0-25%2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
-#SBATCH --output=/data/Wildfire/logs/%x_%A_%a.out
-#SBATCH --error=/data/Wildfire/logs/%x_%A_%a.err
-#SBATCH --container-image=/raid/data/nik/SR
-#SBATCH --container-mounts=/home/nik/Workspace:/workspace,/raid/data/nik:/data,/firedata:/firedata:ro
+#SBATCH --output=/raid/data/nik/Wildfire/logs/%x_%A_%a.out
+#SBATCH --error=/raid/data/nik/Wildfire/logs/%x_%A_%a.err
+#SBATCH --container-image=/raid/data/nik/vesselgpt_5
+#SBATCH --container-mounts=/home/nik/Workspace:/workspace,/raid/data/nik:/data,/cold/Niklas/FireData:/mnt:ro
 #SBATCH --container-remap-root
 #SBATCH --container-writable
 # ---------------------------------------------------------------------------
@@ -38,7 +47,11 @@
 # --partition=gpu liess Job 5196 ueber zwei Stunden in PENDING haengen,
 # obwohl der Knoten 224 CPUs hat. Gleiches Muster wie in AneuG und
 # femur-sr-paper.
-source /workspace/WildfirePrediction/wildfire/slurm/_common.sh
+export WF_DATASET_ROOT=/mnt/MPCFire   # Rohdaten liegen im Container unter /mnt
+source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
+    echo "ABBRUCH: _common.sh nicht gefunden - laeuft der Container ueberhaupt?" >&2
+    exit 1
+}
 BASE_YEAR="${BASE_YEAR:-2000}"
 IDX="${SLURM_ARRAY_TASK_ID:?Array-Job erforderlich (sbatch --array=...)}"
 YEAR=$(( BASE_YEAR + IDX ))

@@ -15,9 +15,16 @@ batch_size: 64
 epochs: 8
 lr: 0.001
 weight_decay: 0.0001
-workers: 4
+workers: 24           # Engpass ist das Lesen, nicht die GPU; der Job
+                      # fordert 32 CPUs an, Rest fuer Haupt- und Systemprozess
 amp: false            # erst nach numerischem Vergleich mit FP32 einschalten
 seed: 20260827
+
+# Blockweises Mischen statt globalem. Gemessen je Prozess auf dem Wuerfel:
+# zufaellig 42,5 Beispiele/s, chunked 220,8 - Faktor 5,2. Ein Block von 20 000
+# Landmarks umspannt rund 30 Kalendertage, die Durchmischung bleibt also
+# brauchbar. 0 schaltet auf globales Mischen zurueck.
+shuffle_chunk: 20000
 
 # Begrenzung je Epoche. Nicht der volle Trainingssatz: bei rund 9 Mio.
 # nutzbaren Landmarks und etwa 2000 Samples/s waere eine Epoche ueber eine

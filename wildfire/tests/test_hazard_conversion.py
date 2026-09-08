@@ -14,8 +14,13 @@ import numpy as np
 import pytest
 
 from wildfire.eval.metrics import cif_from_hazard
-from wildfire.models.tabular import HORIZONS, hazards_from_anchors, prior_shift
+from wildfire.models.tabular import hazards_from_anchors, prior_shift
 
+# Eigene Anker statt des Modul-Globals: ``HORIZONS`` wird zur Laufzeit auf
+# den Horizont des Landmark-Manifests beschnitten. Ein Test, der daran
+# haengt, bricht bei jeder Aenderung des Horizonts - und prueft dann nicht
+# mehr die Umrechnung, sondern die Konfiguration.
+HORIZONS = (1, 7, 14, 30)
 H = 30
 
 

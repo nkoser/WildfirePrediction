@@ -27,6 +27,13 @@ import numpy as np
 EPS = 1e-7
 
 
+# numpy hat np.trapz in 2.0 zu np.trapezoid umbenannt; die alte Schreibweise
+# entfaellt in 3.0. Welche Version im Container liegt, haengt am Image - Job
+# 5847 starb an genau dieser Zeile, weil dort numpy < 2 lief. Einmal aufloesen
+# statt an jeder Aufrufstelle zu verzweigen.
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
+
 def survival_from_hazard(h: np.ndarray) -> np.ndarray:
     """(N, H) Hazards -> (N, H) Survival S(k).
 
@@ -116,7 +123,7 @@ def _roc_pr(y, score, w):
     if P <= 0 or N <= 0:
         return float("nan"), float("nan"), None
     tpr, fpr = tp / P, fp / N
-    auc = float(np.trapezoid(np.r_[0.0, tpr], np.r_[0.0, fpr]))
+    auc = float(_trapz(np.r_[0.0, tpr], np.r_[0.0, fpr]))
     prec = tp / np.maximum(tp + fp, EPS)
     ap = float(np.sum(np.diff(np.r_[0.0, tpr]) * prec))
     return auc, ap, (fpr, tpr, prec)
@@ -216,6 +223,59 @@ def lead_time(h, event, t_event, threshold: float, weight=None, cif=None):
             "detected_share": float(ww.sum() / we.sum())}
 
 
+def concordance_index(risk, event, t_event, weight=None) -> tuple[float, float]:
+    """Gewichteter Harrell-C ueber die gesamte Zeitachse.
+
+    Die AUC(tau) beurteilt die Rangordnung an EINEM Stichtag. Der C-Index
+    fasst sie ueber alle Zeitpunkte zusammen: Von je zwei Landmarks, bei denen
+    einer nachweislich frueher gezuendet hat, soll genau dieser das hoehere
+    Risiko tragen.
+
+    Vergleichbar sind Paare mit ``T_i < T_j`` und ``event_i = 1``; konkordant
+    sind sie, wenn ``risk_i > risk_j``. Bindungen im Risiko zaehlen halb,
+    Bindungen in der Zeit sind nicht vergleichbar.
+
+    Zensierung ist hier rein administrativ bei H, also fuer alle gleich. Eine
+    IPCW-Korrektur (Uno-C) waere damit die Identitaet - siehe die Begruendung
+    im Metrikabschnitt.
+
+    Gewichte gehen als Produkt ins Paar ein: Ohne sie misst man den C-Index
+    der angereicherten STICHPROBE, nicht den der Grundgesamtheit.
+
+    Rueckgabe: (C, Summe der vergleichbaren Paargewichte).
+    """
+    risk = np.asarray(risk, float)
+    n = risk.size
+    w = np.ones(n) if weight is None else np.asarray(weight, float)
+    ev = np.asarray(event).astype(bool)
+    times = np.asarray(t_event, np.int64)
+
+    order = np.argsort(risk, kind="mergesort")
+    rs, ws = risk[order], w[order]
+    pos = np.empty(n, np.int64)
+    pos[order] = np.arange(n)
+    lo = np.searchsorted(rs, rs, "left")[pos]      # Grenzen der Bindungsgruppe
+    hi = np.searchsorted(rs, rs, "right")[pos]
+
+    seen = np.zeros(n, bool)                       # bereits einsortiert, risikosortiert
+    conc = disc = tie = 0.0
+    for t in range(int(times.max()), 0, -1):
+        grp = np.flatnonzero(times == t)
+        if grp.size == 0:
+            continue
+        e = grp[ev[grp]]
+        if e.size and seen.any():
+            cum = np.concatenate(([0.0], np.cumsum(np.where(seen, ws, 0.0))))
+            tot = cum[-1]
+            conc += float((w[e] * cum[lo[e]]).sum())
+            tie += float((w[e] * (cum[hi[e]] - cum[lo[e]])).sum())
+            disc += float((w[e] * (tot - cum[hi[e]])).sum())
+        seen[pos[grp]] = True
+
+    denom = conc + disc + tie
+    return ((conc + 0.5 * tie) / denom if denom > 0 else float("nan")), denom
+
+
 def evaluate(h, event, t_event, weight=None, horizons=(1, 7, 14, 30, 60, 100),
              far=0.01, alarm_threshold=0.01) -> dict:
     """Vollstaendiger Metriksatz nach Phase 8.1 des Arbeitsplans."""
@@ -233,6 +293,11 @@ def evaluate(h, event, t_event, weight=None, horizons=(1, 7, 14, 30, 60, 100),
         "horizons": {},
         "lead_time": lead_time(h, event, t_event, alarm_threshold, weight, F),
     }
+    # Rangordnung ueber die GANZE Zeitachse, als Ergaenzung zu AUC(tau).
+    # Risiko ist F am Horizont - die Groesse, nach der auch sortiert wuerde.
+    c_idx, c_pairs = concordance_index(F[:, H - 1], event, t_event, weight)
+    out["concordance_index"] = c_idx
+    out["concordance_pairs"] = c_pairs
     for t in hs:
         auc, ap = auc_and_pr_at(h, event, t_event, t, weight, F)
         cal = calibration(h, event, t_event, t, weight, cif=F)

@@ -64,6 +64,93 @@ def load_nfdb(path: Path) -> list[dict]:
     return rows
 
 
+def registration_offsets(recs, fkeys, H, W, radius=3, lags=range(-2, 9),
+                         size_lo=100.0, size_hi=1000.0):
+    """Versatz zwischen Meldepunkt und MODIS-Feuerzelle, verzerrungsfrei.
+
+    Zaehlt man je Brand den NAECHSTGELEGENEN Treffer, ist das Ergebnis zur Null
+    hin verzerrt: Ein Grossbrand belegt viele Zellen, darunter fast immer die
+    eigene, sodass ein echter Versatz verdeckt wuerde. Deshalb gehen nur Braende
+    ein, bei denen im Suchfenster GENAU EINE Zelle brennt - dann ist der Versatz
+    eindeutig und nicht durch eine Auswahlregel beeinflusst.
+
+    Die Groessenschranke haelt die Braende bei rund einer Zellflaeche: nur dann
+    ist "genau eine Zelle" keine Auswahl besonders kompakter Faelle.
+
+    Rueckgabe enthaelt zusaetzlich die Sub-Zell-Lage je Versatzgruppe. Haengt der
+    Versatz von der Lage im Sinne einer scharfen Grenze bei 0,5 ab, waere das
+    Raster um eine halbe Zelle verschoben; ist die Trennung unscharf und nur eine
+    Achse betroffen, liegt es an den Daten und nicht an der Umrechnung.
+    """
+    DAY_BITS = 16384
+    lags = list(lags)
+
+    def hits(rr, cc, t0):
+        out = []
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                r2, c2 = rr + dr, cc + dc
+                if not (0 <= r2 < H and 0 <= c2 < W):
+                    continue
+                base = (r2 * W + c2) * DAY_BITS
+                for lag in lags:
+                    t = t0 + lag
+                    if t < 0:
+                        continue
+                    j = np.searchsorted(fkeys, base + t, "left")
+                    if j < fkeys.size and fkeys[j] == base + t:
+                        out.append((dr, dc))
+                        break
+        return out
+
+    single, n_sel, n_any = [], 0, 0
+    for rec in recs:
+        if not size_lo <= rec["size_ha"] < size_hi:
+            continue
+        n_sel += 1
+        h = hits(rec["row"], rec["col"], rec["t"])
+        if not h:
+            continue
+        n_any += 1
+        if len(h) == 1:
+            single.append((h[0][0], h[0][1], rec["frow"], rec["fcol"]))
+
+    if not single:
+        return {"n_selected": n_sel, "n_detected": n_any, "n_single_cell": 0}
+
+    arr = np.array(single, float)
+    dr, dc, fr, fc = arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3]
+    dist = Counter((int(a), int(b)) for a, b in zip(dr, dc))
+    n = len(single)
+
+    by_group = {}
+    for v in (-1, 0, 1):
+        m = dr == v
+        if m.sum():
+            by_group[str(v)] = {"n": int(m.sum()), "mean_frow": float(fr[m].mean())}
+
+    # Gegenprobe: waere die Mittelpunkts-Konvention (round) besser als floor?
+    alt_r = np.abs(dr + (np.floor(fr) - np.round(fr)))
+    alt_c = np.abs(dc + (np.floor(fc) - np.round(fc)))
+
+    return {
+        "size_range_ha": [size_lo, size_hi],
+        "search_radius_px": radius,
+        "day_window": [lags[0], lags[-1]],
+        "n_selected": n_sel,
+        "n_detected": n_any,
+        "n_single_cell": n,
+        "offset_distribution": {f"{a},{b}": c for (a, b), c in dist.most_common()},
+        "share_exact": float(dist[(0, 0)] / n),
+        "centroid_row": float(dr.mean()),
+        "centroid_col": float(dc.mean()),
+        "mean_frow_all": float(fr.mean()),
+        "mean_fcol_all": float(fc.mean()),
+        "subcell_by_row_offset": by_group,
+        "share_exact_if_round_convention": float(np.mean((alt_r == 0) & (alt_c == 0))),
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -146,6 +233,10 @@ def main() -> None:
             "prescribed": (r.get("PRESCRIBED") or "").strip(),
             "agency": (r.get("SRC_AGENCY") or "").strip(),
             "in_valid": bool(valid[rr, cc]), "in_canada": bool(canada[rr, cc]),
+            # Lage innerhalb der Zelle, 0 = Oberkante/Westrand, 1 = Unterkante/Ostrand.
+            # Wird fuer die Registrierungsdiagnose gebraucht.
+            "frow": (lat - tr[5]) / tr[4] - rr,
+            "fcol": (lon - tr[2]) / tr[0] - cc,
         })
     print(f"[nfdb] {len(recs)} verwertbar, verworfen: {dict(skipped)}")
 
@@ -323,6 +414,24 @@ def main() -> None:
     print(f"[nfdb] Okt+Nov   gemeldet {rep_a}, unsere {our_a}, Verhaeltnis {autumn_ratio:.2f}")
     print(f"[nfdb] -> Herbst {excess:.1f}-fach ueberhoeht gegenueber der Saison")
 
+    # ---------------------------------------------- Registrierung
+    fcnt = np.diff(fi["fire_offsets"])
+    fpx = np.repeat(np.asarray(fi["fire_pixels"], np.int64), fcnt)
+    fkeys = np.sort(fpx * 16384 + np.asarray(fi["fire_days"], np.int64))
+    reg = registration_offsets(recs, fkeys, H, W)
+    print(f"\n[nfdb] Registrierung: {reg['n_single_cell']} eindeutige "
+          f"Einzelzell-Treffer von {reg['n_selected']} Braenden 100-1000 ha")
+    if reg.get("n_single_cell"):
+        print(f"[nfdb]   exakt (0,0): {100*reg['share_exact']:.1f} %, "
+              f"Schwerpunkt Zeile {reg['centroid_row']:+.3f} "
+              f"Spalte {reg['centroid_col']:+.3f}")
+        print(f"[nfdb]   Sub-Zell-Lage je Zeilenversatz: "
+              + ", ".join(f"{k}: {v['mean_frow']:.3f} (n={v['n']})"
+                          for k, v in sorted(reg["subcell_by_row_offset"].items())))
+        print(f"[nfdb]   mit round statt floor waeren es "
+              f"{100*reg['share_exact_if_round_convention']:.1f} % "
+              f"-> die Abrundung bleibt die bessere Konvention")
+
     write_manifest(
         cfg, "d9_nfdb_validation", args.config,
         {
@@ -341,6 +450,7 @@ def main() -> None:
             "n_our_ignitions_in_mask": n_ours_valid,
             "fire_type_counts": dict(ft.most_common(10)),
             "n_prescribed": len(presc),
+            "registration": reg,
             "reported_by_month": {str(m): month_all.get(m, 0) for m in range(1, 13)},
             "prescribed_by_month": {str(m): month_presc.get(m, 0) for m in range(1, 13)},
             "cause_counts": dict(Counter(r["cause"] for r in recs)),
