@@ -17,6 +17,6 @@ source /home/nik/workspace/WildfirePrediction/wildfire/slurm/_apptainer.sh
 source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || exit 1
 CACHES=(cache_A cache_G cache_H cache_Y)
 CACHE=${CACHES[${SLURM_ARRAY_TASK_ID:?Array-Job erforderlich}]}
-"$PY" -m wildfire.paper.prepare --config "$CONFIG" --cache "$CACHE" --lookback "${LOOKBACK:-30}"
+"$PY" -m wildfire.paper.prepare --config "$CONFIG" --cache "$CACHE" --lookback "${LOOKBACK:-30}" --tag "${TAG:-}"
 rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
 echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

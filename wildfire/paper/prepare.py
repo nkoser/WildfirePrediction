@@ -68,13 +68,15 @@ def main() -> None:
     ap.add_argument("--cache", required=True, choices=("cache_A", "cache_G", "cache_H", "cache_Y"))
     ap.add_argument("--lookback", type=int, default=30)
     ap.add_argument("--chunk", type=int, default=512)
+    ap.add_argument("--tag", default="",
+                    help="Suffix des Zielordners, z. B. _L61 fuer das volle Fenster")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
 
     root = Path(cfg["dataset_root"]) / args.cache
     exp = Path(cfg["experiment_root"])
-    out = exp / "derived_data" / "paper" / args.cache
+    out = exp / "derived_data" / "paper" / f"{args.cache}{args.tag}"
     out.mkdir(parents=True, exist_ok=True)
 
     doc = json.loads(next(root.glob("samples_variant_*.json")).read_text())
@@ -132,7 +134,7 @@ def main() -> None:
     print(f"[paper] Splits: {tab}")
     print(f"[paper] Jahre je Split: { {s: (v[0], v[-1]) for s, v in years.items()} }")
 
-    write_manifest(cfg, f"p0_paper_{args.cache}", args.config, {
+    write_manifest(cfg, f"p0_paper_{args.cache}{args.tag}", args.config, {
         "cache": args.cache, "h5": str(h5_path), "h5_attrs": attrs,
         "lookback_used": T, "lookback_in_cache": L,
         "window_days": f"D-{T - 1} .. D (letzter Schritt = Sample-Datum, Audit s5)",
