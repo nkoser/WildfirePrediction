@@ -19,6 +19,13 @@ Normalisierung standardmaessig mit den norm_stats.npz des Caches, so wie sie
 mitgeliefert sind; Modell ein 3D-U-Net ueber (T, H, W) mit globalem Pooling
 auf ein Logit, trainiert mit binaerer Kreuzentropie.
 
+Das Paper selbst (Auszug, vom Nutzer geliefert): "Fuer jedes dt in {1, 7, 15,
+30} werden der Zieltag t und seine Kennung Y_s,t festgehalten, und nur das
+Eingabefenster wird rueckwaerts auf [t - dt - T, t - dt - 1] verschoben."
+Mit t = Sample-Datum D endet das Fenster also bei D - (dt + 1):
+--end 2 8 16 31 bei --T 30. Bei dt = 30 beginnt es bei D-60 - genau so weit
+reicht der Cache (61 Tage); das bestaetigt T = 30.
+
 Braucht das volle Fenster: 40_paper_prepare mit LOOKBACK=61 TAG=_L61.
 """
 
@@ -172,6 +179,8 @@ def main() -> None:
     ap.add_argument("--end", type=int, nargs="+", default=[0, 1])
     ap.add_argument("--norm", choices=("cache", "ours"), default="cache")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
+    ap.add_argument("--run-name", default="",
+                    help="Suffix des Manifests, damit Laeufe sich nicht ueberschreiben")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
@@ -219,7 +228,7 @@ def main() -> None:
         print(f"    {r['config']:22s} seed {r['seed']}  PR-AUC {r['test']['pr_auc']:.3f}  "
               f"ROC {r['test']['roc_auc']:.3f}  F1 {r['test']['f1']:.3f}")
 
-    write_manifest(cfg, f"p2_reconstruct_{args.cache}_{args.norm}", args.config, {
+    write_manifest(cfg, f"p2_reconstruct_{args.cache}_{args.norm}{args.run_name}", args.config, {
         "cache": args.cache, "norm": args.norm, "norm_info": ninfo,
         "model": "UNet3D, Breite 32, 2 Pooling-Stufen, globales Pooling, BCE",
         "metric_assumptions": ASSUMPTIONS, "target_pr_auc_paper": 0.68,
