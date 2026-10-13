@@ -58,7 +58,7 @@ from sklearn.preprocessing import StandardScaler
 
 from wildfire.audit.common import (assert_readonly, landmark_horizon,
                                    load_config, write_manifest)
-from wildfire.eval.metrics import evaluate
+from wildfire.eval.metrics import evaluate, negative_log_likelihood
 
 # Ankerhorizonte. HORIZONS wird in main() auf den tatsaechlichen Horizont
 # des Landmark-Manifests beschnitten - eine Quelle statt mehrerer Vorgaben.
@@ -198,15 +198,36 @@ def main() -> None:
             calibrators[mname].append(iso)
 
     # ---------------------------------------------- Auswertung
+    # Untergrenze fuer den Hazard. Zwischen zwei Ankern mit gleichem F ist der
+    # Hazard exakt 0 - eine Zuendung dort hat Wahrscheinlichkeit 0, und die NLL
+    # haengt dann allein an der Klemme der Metrik. Stattdessen bekommt B1 eine
+    # eigene Untergrenze, gewaehlt auf VAL (gewichtete NLL), unveraendert auf
+    # TEST angewandt. 0 steht im Gitter: ohne Nutzen wird nicht geklemmt.
+    floor_grid = (0.0, 1e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5)
+    floors = {m: {} for m in results}
     for mname in results:
+        F_by = {}
         for part in ("val", "test"):
             F_raw = preds[mname][part]
             F_cal = np.column_stack([calibrators[mname][j].predict(F_raw[:, j])
                                      for j in range(len(HORIZONS))])
-            for tag, F in (("prior_shift", F_raw), ("isotonic", F_cal)):
-                h = hazards_from_anchors(F, HORIZONS, args.horizon)
+            F_by[part] = {"prior_shift": F_raw, "isotonic": F_cal}
+        for tag in ("prior_shift", "isotonic"):
+            h_val = hazards_from_anchors(F_by["val"][tag], HORIZONS, args.horizon)
+            nll_by = {f: negative_log_likelihood(np.maximum(h_val, f), data["val"]["event"],
+                                                 data["val"]["t_event"], data["val"]["weight"])
+                      for f in floor_grid}
+            floor = min(nll_by, key=nll_by.get)
+            floors[mname][tag] = {"chosen": floor,
+                                  "val_nll_by_floor": {f"{f:g}": v for f, v in nll_by.items()}}
+            print(f"[B1] {mname:11s} {tag:11s} Hazard-Untergrenze {floor:g} "
+                  f"(val NLL {nll_by[0.0]:.5f} -> {nll_by[floor]:.5f})")
+            for part in ("val", "test"):
+                h = np.maximum(hazards_from_anchors(F_by[part][tag], HORIZONS, args.horizon),
+                               floor)
                 m = evaluate(h, data[part]["event"], data[part]["t_event"],
                              data[part]["weight"])
+                m["hazard_floor"] = floor
                 results[mname].setdefault(part, {})[tag] = m
                 hz = m["horizons"]
                 print(f"[B1] {part:4s} {mname:7s} {tag:11s} NLL={m['nll']:.5f} "
@@ -262,6 +283,7 @@ def main() -> None:
                     "prior_used": pi_for,
                     "prevalence_true": pi_true,
                     "calibration": "Prior-Korrektur, dann isotonisch auf val (gewichtet)",
+                    "hazard_floor": floors,
                     "top_features_auc30": top,
                     "results": results})
 

@@ -221,9 +221,11 @@ def main() -> None:
     }
     print(f"[s6] Shortcut ueber den Feuerkanal im Eingabefenster: {json.dumps(shortcut, indent=2)}")
 
+    # cache_G behaelt den alten Namen (Bericht s7 liest ihn); andere Varianten
+    # bekommen eine eigene Datei statt den G-Befund zu ueberschreiben.
     write_manifest(
         cfg,
-        "s6_label_def",
+        "s6_label_def" if args.cache == "cache_G" else f"s6_label_def_{args.cache}",
         args.config,
         {
             "cache": args.cache,
