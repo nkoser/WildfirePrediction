@@ -14,4 +14,5 @@ source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
     exit 1
 }
 "$PY" -m wildfire.audit.s6_label_def --config "$CONFIG" --cache "${CACHE:-cache_G}" --n-samples "${N_SAMPLES:-200}"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

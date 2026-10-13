@@ -13,4 +13,5 @@ source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
     exit 1
 }
 "$PY" -m wildfire.models.tabular --config "$CONFIG" --split "${SPLIT:-temporal}" --prior-source "${PRIOR:-val}"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

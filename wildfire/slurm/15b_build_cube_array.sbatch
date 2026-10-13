@@ -43,4 +43,5 @@ IDX="${SLURM_ARRAY_TASK_ID:?Array-Job erforderlich (sbatch --array=...)}"
 YEAR=$(( BASE_YEAR + IDX ))
 echo "[array] Task $IDX -> Jahr $YEAR"
 "$PY" -m wildfire.data.cube --config "$CONFIG" --years "$YEAR" --workers "${WORKERS:-8}"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

@@ -15,4 +15,5 @@ source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
     exit 1
 }
 "$PY" -m wildfire.audit.s2c_bt_leakage --config "$CONFIG" --n-days "${N_DAYS:-30}"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

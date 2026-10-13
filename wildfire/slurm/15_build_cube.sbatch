@@ -21,4 +21,5 @@ source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
 }
 "$PY" -m wildfire.data.cube --config "$CONFIG" \
     --years ${YEARS:-2021 2022 2023} --workers "${WORKERS:-8}"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

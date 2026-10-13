@@ -14,4 +14,5 @@ source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
 }
 "$PY" -m wildfire.data.nfdb_events --config "$CONFIG" \
     --min-size-ha "${MIN_SIZE_HA:-1.0}"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

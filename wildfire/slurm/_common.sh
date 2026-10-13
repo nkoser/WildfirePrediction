@@ -22,7 +22,8 @@ PYTAG=$("$PY" -c "import sys;print(f'cp{sys.version_info.major}{sys.version_info
 export PYTHONPATH="$REPO:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 
-mkdir -p "$EXP/logs" "$EXP/data_manifests" "$EXP/reports" "$EXP/figures"
+mkdir -p "$EXP/logs" "$EXP/data_manifests" "$EXP/reports" "$EXP/figures" \
+         "$EXP/checkpoints" "$EXP/predictions" "$EXP/metrics"
 
 echo "[$(date -u +%FT%TZ)] host=$(hostname) job=${SLURM_JOB_ID:-interactive} py=$PY ($PYTAG)"
 echo "[cfg] $CONFIG   image=${APPTAINER_CONTAINER:-<kein Container>}"

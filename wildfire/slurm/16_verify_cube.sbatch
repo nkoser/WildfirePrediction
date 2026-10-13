@@ -14,4 +14,5 @@ source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
     exit 1
 }
 "$PY" -m wildfire.data.verify_cube --config "$CONFIG"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

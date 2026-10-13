@@ -15,4 +15,5 @@ source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
 }
 "$PY" -m wildfire.data.splits --config "$CONFIG" \
     --patch-size "${PATCH:-33}" --horizon-days "${HORIZON:-100}"
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

@@ -39,4 +39,5 @@ nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo "[map] kei
     --taus "${TAUS:-1,7,14,30,60,100}" \
     --tile "${TILE:-256}" --halo "${HALO:-16}" \
     ${BBOX:+--bbox "$BBOX"} ${OUT:+--out "$OUT"}
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc

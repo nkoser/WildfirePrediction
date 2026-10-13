@@ -52,4 +52,5 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 "$PY" -m wildfire.train --config "$CONFIG" \
     --model-config "${MODEL_CONFIG:-/workspace/WildfirePrediction/wildfire/configs/b2_unet.yaml}" \
     ${SMOKE:+--smoke}
-echo "[$(date -u +%FT%TZ)] exit $?"
+rc=$?   # Exit-Code des Python-Aufrufs weitergeben, sonst greift afterok nicht
+echo "[$(date -u +%FT%TZ)] exit $rc"; exit $rc
