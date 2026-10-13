@@ -70,7 +70,10 @@ def negative_log_likelihood(h, event, t_event, weight=None,
     acc, wsum = 0.0, 0.0
     for a in range(0, N, chunk):
         b = min(a + chunk, N)
-        hb = np.clip(np.asarray(h[a:b], np.float64), EPS, 1 - EPS)
+        # Untere Klemme weit unter EPS: Tages-Hazards ruhiger Pixel liegen bei
+        # 4e-7. Eine Klemme auf 1e-7 wuerde ueberraschende Zuendungen dort
+        # milder bestrafen, als das Modell sie vorhergesagt hat.
+        hb = np.clip(np.asarray(h[a:b], np.float64), 1e-15, 1 - EPS)
         kb, eb, wb = k[a:b], event[a:b], w[a:b]
         csum = np.cumsum(np.log1p(-hb), axis=1)
         idx = np.arange(b - a)

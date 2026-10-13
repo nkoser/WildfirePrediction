@@ -40,6 +40,18 @@ from torch.utils.data import Dataset, Sampler
 from wildfire.data.dataset import LOCKED_CHANNELS, LandmarkDataset
 
 
+def slice_days_back(lookback: int, n_slices: int) -> list[int]:
+    """Rueckblick der Zeitscheiben in Tagen vor t, AELTESTE ZUERST.
+
+    Bei L=30, K=5: [28, 21, 14, 7, 0]. Training (PatchDataset) und Inferenz
+    (predict_map) muessen dieselbe Reihenfolge benutzen, weil die Scheiben als
+    Kanaele gestapelt werden - eine verdrehte Reihenfolge ist fuer das Netz
+    ein anderer Input, ohne dass irgendein Shape-Check anschlaegt. Frueher
+    rechnete predict_map seine Scheiben selbst und stapelte sie neueste zuerst.
+    """
+    step = max(1, (lookback - 1) // max(1, n_slices - 1))
+    return sorted({k * step for k in range(n_slices)}, reverse=True)
+
 
 class ChunkedShuffleSampler(Sampler):
     """Mischt in Bloecken statt global - fuer Lokalitaet beim Lesen.
@@ -88,9 +100,9 @@ class PatchDataset(Dataset):
         self.base = LandmarkDataset(exp, split, part, patch=patch,
                                     lookback=lookback, cooldown=cooldown)
         self.n_slices = n_slices
-        # aequidistante Scheiben, letzte ist immer t
-        step = max(1, (lookback - 1) // max(1, n_slices - 1))
-        self.offsets = sorted({lookback - 1 - k * step for k in range(n_slices)})
+        # aequidistante Scheiben, aelteste zuerst, letzte ist immer t;
+        # offsets sind Indizes in die L-Achse von LandmarkDataset (L-1 == t)
+        self.offsets = [lookback - 1 - d for d in slice_days_back(lookback, n_slices)]
         z = np.load(Path(exp) / "derived_data" / "norm_stats.npz")
         self.dyn_mean = z["dyn_mean"][None, :, None, None]
         self.dyn_std = z["dyn_std"][None, :, None, None]

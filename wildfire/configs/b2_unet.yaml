@@ -9,7 +9,8 @@ cooldown: 7
 n_slices: 5
 horizon: 100
 width: 48
-init_bias: -7.0
+init_bias: null      # null = init_hazard_logit(): F(H) startet bei der Praevalenz;
+                      # frueher -7, das war ein Tages-Hazard von 9e-4 (F(100) = 8,7 %)
 
 batch_size: 64
 epochs: 8

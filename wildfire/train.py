@@ -91,7 +91,8 @@ def main() -> None:
 
     model = SpatialHazardUNet(ds_tr.in_channels, horizon=int(mc["horizon"]),
                               width=int(mc["width"]),
-                              init_bias=float(mc["init_bias"])).to(device)
+                              init_bias=(None if mc.get("init_bias") is None
+                                         else float(mc["init_bias"]))).to(device)
     n_par = sum(p.numel() for p in model.parameters())
     print(f"[train] {n_par/1e6:.2f} Mio. Parameter")
 

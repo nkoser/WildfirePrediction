@@ -124,3 +124,50 @@ def test_query_beyond_tau_max_is_clamped_not_extrapolated():
     a = h.cif(raw, torch.tensor([TAU_MAX]))
     b = h.cif(raw, torch.tensor([TAU_MAX * 3]))
     assert torch.allclose(a, b), "ausserhalb der Basis darf nicht extrapoliert werden"
+
+
+def test_cif_is_exactly_zero_at_tau_zero():
+    """S(0) = 1 per Konstruktion - frueher lag F(0) bei sigmoid(theta_0)."""
+    raw = torch.randn(16, M + 1) * 3.0
+    F0 = head().cif(raw, torch.tensor([0.0]))
+    assert torch.all(F0 == 0.0), F0
+
+
+def test_init_cif_matches_prevalence():
+    """Bei Null-Ausgabe soll F(tau_max) die Praevalenz treffen, nicht 79 %."""
+    from wildfire.models.losses import INIT_CIF_H
+    h = BernsteinSurvivalHead(degree=M, tau_max=100.0)
+    F = h.cif(torch.zeros(2, M + 1, dtype=torch.float64), torch.tensor([100.0]))
+    assert torch.allclose(F, torch.full_like(F, INIT_CIF_H), rtol=1e-9), F
+
+
+def test_nll_equals_discrete_nll_of_its_hazards():
+    """Trainingsverlust und Auswertungs-NLL muessen dieselbe Zahl sein.
+
+    Die Auswertung rechnet ueber hazards() und die diskrete NLL; das Training
+    ueber die intervallzensierte Likelihood. Mit F(0) != 0 wichen beide um
+    log S(0) je Beispiel voneinander ab.
+    """
+    from wildfire.eval.metrics import negative_log_likelihood
+    torch.manual_seed(1)
+    Hh = 100
+    h = BernsteinSurvivalHead(degree=M, tau_max=float(Hh))
+    raw = torch.randn(200, M + 1, dtype=torch.float64)
+    ev = (torch.rand(200) < 0.4).float()
+    tev = torch.where(ev.bool(), torch.randint(1, Hh + 1, (200,)), torch.full((200,), Hh))
+    w = torch.rand(200, dtype=torch.float64) * 50 + 1
+    got = bernstein_nll(h, raw, ev, tev, float(Hh), weight=w).item()
+    haz = h.hazards(raw, Hh).numpy()
+    ref = negative_log_likelihood(haz, ev.numpy(), tev.numpy(), w.numpy())
+    assert got == pytest.approx(ref, rel=1e-8), (got, ref)
+
+
+def test_low_risk_event_still_has_a_gradient():
+    """Tages-Hazard um 1e-9: frueher klemmte F(k)-F(k-1) auf 1e-7, Gradient 0."""
+    h = BernsteinSurvivalHead(degree=M, tau_max=100.0, init_offset=-25.0,
+                              init_cif=1e-7)
+    raw = torch.zeros(1, M + 1, requires_grad=True)
+    loss = bernstein_nll(h, raw, torch.ones(1), torch.tensor([50]), 100.0)
+    loss.backward()
+    assert torch.isfinite(loss) and loss.item() > 15.0, loss.item()
+    assert raw.grad.abs().sum().item() > 0.1, raw.grad

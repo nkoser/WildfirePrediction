@@ -44,6 +44,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -69,14 +70,25 @@ AGENCY_TO_REGION = {
 }
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--nfdb", default="/data/Wildfire/artifacts/NFDB_point_txt.zip")
     ap.add_argument("--min-size-ha", type=float, default=1.0)
-    ap.add_argument("--season-start", default="05-01")
-    ap.add_argument("--season-end", default="09-30")
-    args = ap.parse_args()
+    # Das Label-Fenster eines Landmarks reicht bis t+H: bei Landmarks bis zum
+    # 31.08. und H = 100 also bis in den Dezember. Frueher stand hier
+    # 05-01..09-30 - Zuendungen ab Oktober fehlten dann im Index, und
+    # Landmarks ab Ende Juni wurden als "bis H ueberlebt" gelabelt statt mit
+    # ihrer spaeten Zuendung. Der Index deckt deshalb das ganze Jahr ab; die
+    # Saison der LANDMARKS filtern landmarks.py, splits.py und climatology.py
+    # selbst.
+    ap.add_argument("--season-start", default="01-01")
+    ap.add_argument("--season-end", default="12-31")
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
 
@@ -127,8 +139,10 @@ def main() -> None:
         except (TypeError, ValueError):
             drop["keine Koordinate"] += 1
             continue
-        c = int((lon - tr[2]) / tr[0])
-        rr = int((lat - tr[5]) / tr[4])
+        # floor, nicht int(): int() rundet gegen null, ein Punkt knapp
+        # westlich/noerdlich des Gitters landete sonst in Spalte/Zeile 0.
+        c = math.floor((lon - tr[2]) / tr[0])
+        rr = math.floor((lat - tr[5]) / tr[4])
         if not (0 <= rr < H and 0 <= c < W):
             drop["ausserhalb des Gitters"] += 1
             continue

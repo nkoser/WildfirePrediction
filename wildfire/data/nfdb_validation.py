@@ -40,6 +40,7 @@ import csv
 import datetime as dt
 import io
 import json
+import math
 import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -185,8 +186,8 @@ def main() -> None:
     print(f"[nfdb] {len(rows)} Eintraege in der Branddatenbank")
 
     def rc_of(lat: float, lon: float):
-        c = int((lon - tr[2]) / tr[0])
-        r = int((lat - tr[5]) / tr[4])
+        c = math.floor((lon - tr[2]) / tr[0])
+        r = math.floor((lat - tr[5]) / tr[4])
         return r, c
 
     recs = []

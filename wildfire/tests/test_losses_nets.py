@@ -12,7 +12,8 @@ import pytest
 import torch
 
 from wildfire.eval.metrics import negative_log_likelihood
-from wildfire.models.losses import cif_from_logits, discrete_survival_nll
+from wildfire.models.losses import (INIT_CIF_H, cif_from_logits,
+                                    discrete_survival_nll, init_hazard_logit)
 from wildfire.models.nets import SpatialHazardUNet
 
 H = 30
@@ -110,10 +111,22 @@ def test_unet_centre_matches_dense_output():
 
 
 def test_unet_starts_near_the_prevalence():
-    """Der Startbias muss auf die Groessenordnung seltener Ereignisse zeigen."""
-    net = SpatialHazardUNet(in_ch=5, horizon=H, width=8, init_bias=-7.0)
-    h = torch.sigmoid(net(torch.randn(2, 5, 33, 33)))
-    assert 1e-4 < h.mean().item() < 5e-3, h.mean().item()
+    """Der Startbias muss F(H) auf die Praevalenz setzen, nicht den Tages-Hazard.
+
+    Frueher pruefte dieser Test 1e-4 < h < 5e-3 je TAG - das liess init_bias=-7
+    durch, also F(100) = 8,7 % bei einer Praevalenz von 0,13 %.
+    """
+    net = SpatialHazardUNet(in_ch=5, horizon=H, width=8)
+    logits = net(torch.randn(2, 5, 33, 33))
+    F_H = cif_from_logits(logits.permute(0, 2, 3, 1).reshape(-1, H))[:, -1]
+    assert torch.allclose(F_H, torch.full_like(F_H, INIT_CIF_H), rtol=1e-3), F_H.mean()
+
+
+def test_init_hazard_logit_matches_prevalence():
+    b = init_hazard_logit(1.3e-3, 100)
+    assert abs(b - (-11.25)) < 0.01, b
+    F_H = 1 - (1 - torch.sigmoid(torch.tensor(b, dtype=torch.float64))) ** 100
+    assert abs(F_H.item() - 1.3e-3) < 1e-9
 
 
 def test_unet_can_overfit_a_single_example():

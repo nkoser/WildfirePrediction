@@ -38,12 +38,10 @@ def curves(model: MLPSurvival, X: torch.Tensor, horizon: int, head: str,
             h = torch.sigmoid(raw).double()
             F = 1 - torch.cumprod(1 - h, dim=1)
         else:
-            tau = torch.arange(1, horizon + 1, dtype=torch.float32)
-            F = torch.cat([model.bern.cif(raw[i:i + chunk], tau)
-                           for i in range(0, len(raw), chunk)]).double()
-            prev = torch.cat([torch.zeros(len(F), 1, dtype=torch.float64),
-                              F[:, :-1]], dim=1)
-            h = (F - prev) / (1 - prev).clamp(min=EPS)
+            # Hazards direkt aus der Log-Survival in float64 (S(0) = 1)
+            h = torch.cat([model.bern.hazards(raw[i:i + chunk].double(), horizon)
+                           for i in range(0, len(raw), chunk)])
+            F = 1 - torch.cumprod(1 - h, dim=1)
     return h.numpy(), F.numpy()
 
 

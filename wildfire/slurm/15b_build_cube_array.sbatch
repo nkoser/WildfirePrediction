@@ -1,24 +1,12 @@
 #!/bin/bash
-# BRAUCHT DIE ROHDATEN. Auf dem Host liegen sie unter /cold/Niklas/FireData;
-# in dieser interaktiven Session sind sie als /firedata sichtbar. Fuer einen
-# pyxis-Container muss die HOST-Quelle stehen - ein Mount von /firedata
-# scheiterte, weil es diesen Pfad auf dem Host nicht gibt.
-#
-# Ziel ist /mnt und nicht /firedata: Enroot legt fehlende Mountpunkte im Image
-# nicht an, und ob das SR-Image ein /firedata hat, ist ungeprueft. /mnt gibt es
-# in jedem Image. Passend dazu setzt WF_DATASET_ROOT den Rohdatenpfad um; der
-# Wert landet ueber write_manifest in der Provenienz.
+# BRAUCHT DIE ROHDATEN - im Container unter /firedata (Bind in _apptainer.sh).
 #SBATCH --job-name=wf_cube_array
 #SBATCH --array=0-25%2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
-#SBATCH --output=/raid/data/nik/Wildfire/logs/%x_%A_%a.out
-#SBATCH --error=/raid/data/nik/Wildfire/logs/%x_%A_%a.err
-#SBATCH --container-image=/raid/data/nik/vesselgpt_5
-#SBATCH --container-mounts=/home/nik/Workspace:/workspace,/raid/data/nik:/data,/cold/Niklas/FireData:/mnt:ro
-#SBATCH --container-remap-root
-#SBATCH --container-writable
+#SBATCH --output=/scratch/shared/nik/Wildfire/logs/%x_%A_%a.out
+#SBATCH --error=/scratch/shared/nik/Wildfire/logs/%x_%A_%a.err
 # ---------------------------------------------------------------------------
 # Ein Array-Task JE JAHR, Index 0..25 -> Jahr 2000..2025.
 #
@@ -39,15 +27,13 @@
 #   2017 -> Index 17, 2019 -> Index 19
 #   sbatch --array=17,19 wildfire/slurm/15b_build_cube_array.sbatch
 #
-# Kein --container-name: bei Array-Jobs wuerden sich sonst alle Tasks
-# denselben Container teilen wollen.
 # ---------------------------------------------------------------------------
 # BEWUSST OHNE --partition und ohne --gres: reine CPU-Jobs nehmen so die
 # Default-Partition und warten nicht in der GPU-Queue. Ein explizites
 # --partition=gpu liess Job 5196 ueber zwei Stunden in PENDING haengen,
 # obwohl der Knoten 224 CPUs hat. Gleiches Muster wie in AneuG und
 # femur-sr-paper.
-export WF_DATASET_ROOT=/mnt/MPCFire   # Rohdaten liegen im Container unter /mnt
+source /home/nik/workspace/WildfirePrediction/wildfire/slurm/_apptainer.sh
 source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || {
     echo "ABBRUCH: _common.sh nicht gefunden - laeuft der Container ueberhaupt?" >&2
     exit 1

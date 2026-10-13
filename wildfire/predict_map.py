@@ -32,11 +32,15 @@ import torch
 
 from wildfire.audit.common import load_config
 from wildfire.data.dataset import LOCKED_CHANNELS, CubeReader
+from wildfire.models.torch_data import slice_days_back
 
 
 def build_input(cube: CubeReader, t: int, r0: int, r1: int, c0: int, c1: int,
                 offsets: list[int], cooldown: int, norm) -> np.ndarray:
-    """(C_in, h, w) fuer eine Kachel - dieselbe Zusammensetzung wie im Training."""
+    """(C_in, h, w) fuer eine Kachel - dieselbe Zusammensetzung wie im Training.
+
+    ``offsets`` sind Tage vor t, aelteste zuerst (``slice_days_back``).
+    """
     dyn_mean, dyn_std, stat_mean, stat_std = norm
     locked = np.array(sorted(LOCKED_CHANNELS))
     slices = []
@@ -69,7 +73,9 @@ def main() -> None:
     ap.add_argument("--bbox", default=None,
                     help="row0,row1,col0,col1 - Standard ist das ganze Gitter")
     ap.add_argument("--tile", type=int, default=256)
-    ap.add_argument("--halo", type=int, default=16)
+    # Rezeptives Feld des U-Nets (2 Pooling-Stufen, je 2 Conv 3x3): Radius 23.
+    # Mit weniger Rand sieht das Netz am Kachelrand Nullen statt Nachbarn.
+    ap.add_argument("--halo", type=int, default=24)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -82,8 +88,7 @@ def main() -> None:
     cube = CubeReader(exp)
     t = cube.dates.index(args.date)
     L, C = int(mc["lookback"]), int(mc["cooldown"])
-    step = max(1, (L - 1) // max(1, int(mc["n_slices"]) - 1))
-    offsets = sorted({k * step for k in range(int(mc["n_slices"]))})
+    offsets = slice_days_back(L, int(mc["n_slices"]))
 
     z = np.load(exp / "derived_data" / "norm_stats.npz")
     norm = (z["dyn_mean"], z["dyn_std"], z["stat_mean"], z["stat_std"])

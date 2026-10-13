@@ -23,6 +23,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from wildfire.models.losses import init_hazard_logit
+
 
 def block(cin: int, cout: int) -> nn.Sequential:
     return nn.Sequential(
@@ -37,7 +39,7 @@ def block(cin: int, cout: int) -> nn.Sequential:
 
 class SpatialHazardUNet(nn.Module):
     def __init__(self, in_ch: int, horizon: int = 30, width: int = 48,
-                 init_bias: float = -7.0) -> None:
+                 init_bias: float | None = None) -> None:
         super().__init__()
         w = width
         self.enc1 = block(in_ch, w)
@@ -46,9 +48,12 @@ class SpatialHazardUNet(nn.Module):
         self.dec2 = block(4 * w + 2 * w, 2 * w)
         self.dec1 = block(2 * w + w, w)
         self.head = nn.Conv2d(w, horizon, 1)
-        # Startbias auf die Groessenordnung der Praevalenz: sigmoid(-7) ~ 9e-4.
-        # Ohne das beginnt das Netz mit Hazard 0,5 und verbringt die ersten
-        # Epochen damit, sich auf ein seltenes Ereignis herunterzuarbeiten.
+        # Startbias auf den TAGES-Hazard, der zur Praevalenz passt (Standard
+        # logit(1,3e-5) = -11,25, siehe init_hazard_logit). Ohne das beginnt das
+        # Netz mit Hazard 0,5 und verbringt die ersten Epochen damit, sich auf
+        # ein seltenes Ereignis herunterzuarbeiten.
+        if init_bias is None:
+            init_bias = init_hazard_logit(horizon=horizon)
         nn.init.zeros_(self.head.weight)
         nn.init.constant_(self.head.bias, init_bias)
 

@@ -51,12 +51,12 @@ from wildfire.audit.common import (assert_readonly, landmark_horizon,
 from wildfire.eval.metrics import evaluate
 from wildfire.experiment import register
 from wildfire.models.bernstein import BernsteinSurvivalHead, bernstein_nll
-from wildfire.models.losses import discrete_survival_nll
+from wildfire.models.losses import discrete_survival_nll, init_hazard_logit
 
 
 class MLPSurvival(nn.Module):
     def __init__(self, n_in: int, horizon: int = 100, width: int = 256,
-                 depth: int = 3, dropout: float = 0.1, init_bias: float = -7.0,
+                 depth: int = 3, dropout: float = 0.1, init_bias: float | None = None,
                  head: str = "discrete", degree: int = 12):
         super().__init__()
         layers, c = [], n_in
@@ -68,9 +68,8 @@ class MLPSurvival(nn.Module):
         self.kind = head
         self.horizon = horizon
         if head == "bernstein":
-            self.bern = BernsteinSurvivalHead(degree=degree,
-                                              tau_max=float(horizon),
-                                              init_offset=init_bias)
+            # Startwert steckt im Kopf selbst (F(H) = INIT_CIF_H bei Null-Ausgabe)
+            self.bern = BernsteinSurvivalHead(degree=degree, tau_max=float(horizon))
             self.head = nn.Linear(c, self.bern.n_out)
             nn.init.zeros_(self.head.weight)
             nn.init.zeros_(self.head.bias)
@@ -78,7 +77,8 @@ class MLPSurvival(nn.Module):
             self.bern = None
             self.head = nn.Linear(c, horizon)
             nn.init.zeros_(self.head.weight)
-            nn.init.constant_(self.head.bias, init_bias)
+            nn.init.constant_(self.head.bias, init_hazard_logit(horizon=horizon)
+                              if init_bias is None else init_bias)
 
     def forward(self, x):
         return self.head(self.body(x))
@@ -89,11 +89,7 @@ class MLPSurvival(nn.Module):
         raw = self.forward(x)
         if self.kind == "discrete":
             return torch.sigmoid(raw)
-        tau = torch.arange(0, self.horizon + 1, device=raw.device,
-                           dtype=raw.dtype)
-        F = self.bern.cif(raw, tau)                     # (N, H+1), F[0] = F(0)
-        S = (1.0 - F).clamp_min(1e-12)
-        return (1.0 - S[:, 1:] / S[:, :-1]).clamp(0.0, 1.0 - 1e-7)
+        return self.bern.hazards(raw, self.horizon).clamp(0.0, 1.0 - 1e-7)
 
 
 def main() -> None:

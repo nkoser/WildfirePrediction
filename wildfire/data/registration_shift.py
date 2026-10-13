@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -83,8 +84,8 @@ def main() -> None:
             continue
         if t is None or t not in have:
             continue
-        rr = int((lat - tr[5]) / tr[4])
-        cc = int((lon - tr[2]) / tr[0])
+        rr = math.floor((lat - tr[5]) / tr[4])
+        cc = math.floor((lon - tr[2]) / tr[0])
         if 0 <= rr < H and 0 <= cc < W:
             recs.append((t, rr, cc))
     print(f"[shift] {len(recs)} Zuendungen der Saison {args.year} im Wuerfel")

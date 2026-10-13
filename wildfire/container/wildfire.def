@@ -1,0 +1,32 @@
+Bootstrap: localimage
+From: /scratch/shared/nik/containers/bvm27_base.sif
+
+# Image fuer WildfirePrediction auf dem vcai-Cluster (rtx-01, RTX PRO 6000 / sm_120).
+#
+# Basis ist bvm27_base.sif (nvcr.io/nvidia/pytorch:25.10-py3 + scipy, sklearn,
+# pandas, matplotlib, pyyaml). Dessen torch ist fuer sm_120 gebaut - ein
+# eigenes Pytorch-Wheel muesste das erst wieder nachweisen. Hier kommen nur die
+# Geo- und Testpakete dazu, die das Projekt zusaetzlich braucht.
+#
+# Ersetzt den alten Weg ueber /miniconda3/envs/vmtk_2 + $EXP/pydeps-cp311.
+# Build:  sbatch wildfire/slurm/00a_build_container.sbatch
+
+%setup
+    # /cold und /scratch bindet der Cluster automatisch ein; die Projekt-Binds
+    # aus _apptainer.sh brauchen ihre Mountpunkte ebenfalls im Image.
+    mkdir -p "${APPTAINER_ROOTFS}/cold" "${APPTAINER_ROOTFS}/scratch" \
+             "${APPTAINER_ROOTFS}/firedata" "${APPTAINER_ROOTFS}/data/Wildfire" \
+             "${APPTAINER_ROOTFS}/workspace/WildfirePrediction"
+
+%post
+    set -eux
+    export PIP_NO_CACHE_DIR=1
+    pip install rasterio pyproj h5py tifffile pytest pyyaml
+    python -c "import torch, numpy, scipy, sklearn, rasterio, pyproj, h5py, yaml, pytest; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'rasterio', rasterio.__version__)"
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export PYTHONPATH=/workspace/WildfirePrediction
+
+%labels
+    Project WildfirePrediction

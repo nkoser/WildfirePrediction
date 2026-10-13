@@ -62,6 +62,13 @@ def exp(tmp_path_factory) -> Path:
              ign_offsets=np.zeros(1, np.int64), ign_days=np.zeros(0, np.int32),
              ign_events=np.zeros(0, np.int32))
     np.save(root / "derived_data" / "masks" / "valid.npy", np.ones((H, W), bool))
+    # Kanalweise verschiedene Statistik, damit eine Kanal- oder Scheiben-
+    # vertauschung nach der Normalisierung nicht zufaellig gleich aussieht.
+    np.savez(root / "derived_data" / "norm_stats.npz",
+             dyn_mean=np.arange(C_DYN, dtype=np.float32) * 0.5,
+             dyn_std=1.0 + np.arange(C_DYN, dtype=np.float32) * 0.1,
+             stat_mean=np.full(C_STAT, 2.0, np.float32),
+             stat_std=np.full(C_STAT, 3.0, np.float32))
 
     t0 = 40
     np.savez(root / "derived_data" / "landmarks" / "temporal_train.npz",
@@ -140,3 +147,34 @@ def test_labels_and_weights_pass_through(ds):
     assert (a["event"], a["t_event"], a["event_id"]) == (1, 5, 42)
     assert (b["event"], b["t_event"], b["event_id"]) == (0, 30, -1)
     assert a["weight"] == 1.0 and b["weight"] == 178.0
+
+
+def test_map_inference_builds_the_training_input(exp):
+    """predict_map.build_input muss am Landmark exakt den Trainingstensor liefern.
+
+    Faengt den Fehler, bei dem die Karte die Zeitscheiben neueste-zuerst
+    stapelte, waehrend das Training aelteste-zuerst lernte: Shapes stimmen
+    in beiden Faellen, nur die Werte nicht.
+    """
+    from wildfire.models.torch_data import PatchDataset, slice_days_back
+    from wildfire.predict_map import build_input
+    from wildfire.data.dataset import CubeReader
+
+    n_slices = 4
+    pd = PatchDataset(exp, "temporal", "train", patch=PATCH, lookback=LOOKBACK,
+                      cooldown=COOLDOWN, n_slices=n_slices)
+    x_train = pd[0]["x"].numpy()
+    s = pd.base[0]
+    half = PATCH // 2
+    r0, c0 = int(s["row"]) - half, int(s["col"]) - half
+    z = np.load(exp / "derived_data" / "norm_stats.npz")
+    norm = (z["dyn_mean"], z["dyn_std"], z["stat_mean"], z["stat_std"])
+    x_map = build_input(CubeReader(exp), int(s["t"]), r0, r0 + PATCH, c0, c0 + PATCH,
+                        slice_days_back(LOOKBACK, n_slices), COOLDOWN, norm)
+    assert x_map.shape == x_train.shape
+    np.testing.assert_allclose(x_map, x_train, rtol=1e-6, atol=1e-6)
+
+
+def test_slices_are_oldest_first_and_end_at_t():
+    from wildfire.models.torch_data import slice_days_back
+    assert slice_days_back(30, 5) == [28, 21, 14, 7, 0]
