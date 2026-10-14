@@ -39,6 +39,55 @@ COOLDOWN = 7
 SHORT = 7
 
 
+def feature_names(n_dyn: int, n_stat: int) -> list[str]:
+    return ([f"{c}_last" for c in range(n_dyn)] + [f"{c}_mean7" for c in range(n_dyn)]
+            + [f"{c}_mean30" for c in range(n_dyn)] + [f"{c}_min30" for c in range(n_dyn)]
+            + [f"{c}_max30" for c in range(n_dyn)] + [f"stat{c}" for c in range(n_stat)]
+            + ["lat", "cell_km2", "region", "doy_sin", "doy_cos", "year"])
+
+
+def row_features(cube: CubeReader, tt: int, r: int, c: int, lat, area, region,
+                 locked: np.ndarray) -> np.ndarray:
+    """Merkmalsvektor (vor dem Spaltenfilter) fuer einen Pixeltag (t, r, c).
+
+    Auch von wildfire.paper.ours_on_paper benutzt - dieselbe Rechnung wie im
+    Training, nicht eine Nachbildung.
+    """
+    n_dyn = cube.n_dyn
+    # Das Historienfenster liegt immer im selben Jahr: die Saison
+    # beginnt am 1. Mai, der Wuerfel am 1. April, 30 Tage zurueck
+    # bleiben also innerhalb des Jahres. Damit genuegt EIN
+    # zusammenhaengender Schnitt statt 30 Einzelzugriffe.
+    year, li = cube._pos[tt]
+    year0, li0 = cube._pos[tt - LOOKBACK + 1]
+    dyn, _ = cube._arrays(year)
+    if year0 == year and li0 == li - LOOKBACK + 1:
+        series = dyn[li0:li + 1, r, c, :].astype(np.float32)
+    else:                                     # Jahresgrenze: Rueckfall
+        series = np.empty((LOOKBACK, n_dyn), np.float32)
+        for k in range(LOOKBACK):
+            yy, ll = cube._pos[tt - (LOOKBACK - 1 - k)]
+            series[k] = cube._arrays(yy)[0][ll, r, c, :]
+    # Kanalsperre auf die Historie anwenden
+    series[LOOKBACK - COOLDOWN:, locked] = np.nan
+
+    with np.errstate(invalid="ignore"):
+        last = series[-1]
+        mean_s = np.nanmean(series[-SHORT:], axis=0)
+        mean_l = np.nanmean(series, axis=0)
+        mn = np.nanmin(series, axis=0)
+        mx = np.nanmax(series, axis=0)
+    stat = cube._arrays(year)[1][r, c, :].astype(np.float32)
+    d0 = dt.date.fromisoformat(cube.dates[tt])
+    doy = d0.timetuple().tm_yday
+    extra = np.array([
+        lat[r, c], area[r, c] / 1e6, region[r, c],
+        np.sin(2 * np.pi * doy / 365.25), np.cos(2 * np.pi * doy / 365.25),
+        d0.year,
+    ], np.float32)
+    return np.concatenate([last, mean_s, mean_l, mn, mx, stat, extra])
+
+
 def build(cfg, split: str, part: str, n_max: int, seed: int):
     exp = Path(cfg["experiment_root"])
     z = np.load(exp / "derived_data" / "landmarks" / f"{split}_{part}.npz")
@@ -69,47 +118,11 @@ def build(cfg, split: str, part: str, n_max: int, seed: int):
     locked = np.array(sorted(LOCKED_CHANNELS))
 
     for i, j in enumerate(idx.tolist()):
-        tt, r, c = int(t[j]), int(row[j]), int(col[j])
-        # Das Historienfenster liegt immer im selben Jahr: die Saison
-        # beginnt am 1. Mai, der Wuerfel am 1. April, 30 Tage zurueck
-        # bleiben also innerhalb des Jahres. Damit genuegt EIN
-        # zusammenhaengender Schnitt statt 30 Einzelzugriffe.
-        year, li = cube._pos[tt]
-        year0, li0 = cube._pos[tt - LOOKBACK + 1]
-        dyn, _ = cube._arrays(year)
-        if year0 == year and li0 == li - LOOKBACK + 1:
-            series = dyn[li0:li + 1, r, c, :].astype(np.float32)
-        else:                                     # Jahresgrenze: Rueckfall
-            series = np.empty((LOOKBACK, n_dyn), np.float32)
-            for k in range(LOOKBACK):
-                yy, ll = cube._pos[tt - (LOOKBACK - 1 - k)]
-                series[k] = cube._arrays(yy)[0][ll, r, c, :]
-        # Kanalsperre auf die Historie anwenden
-        series[LOOKBACK - COOLDOWN:, locked] = np.nan
-
-        with np.errstate(invalid="ignore"):
-            last = series[-1]
-            mean_s = np.nanmean(series[-SHORT:], axis=0)
-            mean_l = np.nanmean(series, axis=0)
-            mn = np.nanmin(series, axis=0)
-            mx = np.nanmax(series, axis=0)
-        slope = mean_s - np.nan_to_num(np.nanmean(series[-2 * SHORT:-SHORT], axis=0))
-        stat = cube._arrays(cube._pos[tt][0])[1][r, c, :].astype(np.float32)
-        d0 = dt.date.fromisoformat(cube.dates[tt])
-        doy = d0.timetuple().tm_yday
-        extra = np.array([
-            lat[r, c], area[r, c] / 1e6, region[r, c],
-            np.sin(2 * np.pi * doy / 365.25), np.cos(2 * np.pi * doy / 365.25),
-            d0.year,
-        ], np.float32)
-        X[i] = np.concatenate([last, mean_s, mean_l, mn, mx, stat, extra])
+        X[i] = row_features(cube, int(t[j]), int(row[j]), int(col[j]), lat, area, region, locked)
         if i % 50000 == 0:
             print(f"    {part}: {i}/{idx.size}", flush=True)
 
-    names = ([f"{c}_last" for c in range(n_dyn)] + [f"{c}_mean7" for c in range(n_dyn)]
-             + [f"{c}_mean30" for c in range(n_dyn)] + [f"{c}_min30" for c in range(n_dyn)]
-             + [f"{c}_max30" for c in range(n_dyn)] + [f"stat{c}" for c in range(n_stat)]
-             + ["lat", "cell_km2", "region", "doy_sin", "doy_cos", "year"])
+    names = feature_names(n_dyn, n_stat)
     # Spalten, die IMMER undefiniert sind, entfernen statt imputieren.
     # Fuer die gesperrten Kanaele gibt es am Tag t und im 7-Tage-Mittel
     # per Konstruktion keinen Wert - das ist keine fehlende Messung,

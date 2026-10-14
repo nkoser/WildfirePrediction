@@ -204,6 +204,7 @@ def main() -> None:
     print(f"[rec] Normierung {args.norm}: {ninfo}")
 
     runs = []
+    preds = {"idx_val": idx["val"], "idx_test": idx["test"]}
     for cset, T, end in itertools.product(args.channels, args.T, args.end):
         chs = CHANNELS[cset]
         t1 = L - end
@@ -213,8 +214,10 @@ def main() -> None:
         for seed in args.seeds:
             t_run = time.time()
             net, hist = fit(X, y, idx, chs, t0, t1, mean, std, device, seed)
-            res = {s: paper_metrics(predict(net, X, idx[s], chs, t0, t1, mean, std, device),
-                                    y[idx[s]]) for s in ("val", "test")}
+            p = {s: predict(net, X, idx[s], chs, t0, t1, mean, std, device) for s in ("val", "test")}
+            for s in ("val", "test"):
+                preds[f"{tag}_s{seed}_{s}"] = p[s].astype(np.float32)
+            res = {s: paper_metrics(p[s], y[idx[s]]) for s in ("val", "test")}
             t = res["test"]
             print(f"[rec] {tag} seed {seed} TEST  PR-AUC {t['pr_auc']:.3f}  ROC {t['roc_auc']:.3f}  "
                   f"F1 {t['f1']:.3f}  P {t['precision']:.3f}  R {t['recall']:.3f}  "
@@ -228,7 +231,11 @@ def main() -> None:
         print(f"    {r['config']:22s} seed {r['seed']}  PR-AUC {r['test']['pr_auc']:.3f}  "
               f"ROC {r['test']['roc_auc']:.3f}  F1 {r['test']['f1']:.3f}")
 
+    pred_path = exp / "predictions" / "paper" / f"rec_{args.cache}_{args.norm}{args.run_name}.npz"
+    pred_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(pred_path, **preds)
     write_manifest(cfg, f"p2_reconstruct_{args.cache}_{args.norm}{args.run_name}", args.config, {
+        "predictions": str(pred_path),
         "cache": args.cache, "norm": args.norm, "norm_info": ninfo,
         "model": "UNet3D, Breite 32, 2 Pooling-Stufen, globales Pooling, BCE",
         "metric_assumptions": ASSUMPTIONS, "target_pr_auc_paper": 0.68,
