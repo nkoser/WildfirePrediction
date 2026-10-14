@@ -27,6 +27,7 @@ import datetime as dt
 from pathlib import Path
 
 import numpy as np
+from scipy.ndimage import maximum_filter
 from scipy.stats import ks_2samp
 
 from wildfire.audit.common import assert_readonly, load_config, write_manifest
@@ -36,6 +37,17 @@ FWI_CH = list(range(19, 25))                       # Wuerfel und Cache: dieselbe
 NAMES = ["FFMC", "DMC", "DC", "ISI", "BUI", "FWI"]
 CACHES = ("cache_A", "cache_G", "cache_H", "cache_Y")
 Q = (5, 10, 25, 50, 75, 90, 95)
+
+
+def calibrate(X: np.ndarray, fire: np.ndarray):
+    """P99, d_i und Gewichte w_i laut Paper aus Rohwerten X (n, 6) und Feuer (n,)."""
+    p99 = np.percentile(X, 99, axis=0)
+    p99 = np.where(p99 > 0, p99, 1.0)
+    Xn = np.minimum(X / p99, 1.0)
+    sd_n = Xn[~fire].std(0)
+    d = np.maximum(0.0, (Xn[fire].mean(0) - Xn[~fire].mean(0)) / np.where(sd_n > 0, sd_n, 1.0))
+    w = d / d.sum() if d.sum() > 0 else np.full(X.shape[1], 1 / X.shape[1])
+    return p99, d, w
 
 
 def score(x: np.ndarray, p99: np.ndarray, w: np.ndarray) -> np.ndarray:
@@ -57,10 +69,18 @@ def main() -> None:
     rng = np.random.default_rng(int(cfg["seed"]))
 
     # ---------------------------------------------- Trainingsset (Pool)
+    # Gezogen wird aus Land in Kanada (Obermenge unserer Gueltigkeitsmaske);
+    # je Pixeltag wird mitgeschrieben, ob er in valid liegt und ob Feuer am
+    # Pixel bzw. irgendwo im 13x13-Ausschnitt brennt (so sind die Cache-Labels
+    # definiert, Audit s6). Daraus werden mehrere Lesarten von "Trainingsset"
+    # und "Feuer" verglichen.
     cube = CubeReader(exp)
-    valid = np.load(exp / "derived_data" / "masks" / "valid.npy")
-    vr, vc = np.nonzero(valid)
-    xs, fs = [], []
+    mdir = exp / "derived_data" / "masks"
+    valid = np.load(mdir / "valid.npy")
+    pool_mask = np.load(mdir / "land.npy") & np.load(mdir / "canada.npy")
+    vr, vc = np.nonzero(pool_mask)
+    in_valid = valid[vr, vc]
+    xs, fp, fpatch, iv = [], [], [], []
     for year in range(args.train_years[0], args.train_years[1] + 1):
         info = cube.per_year[str(year)]
         days = [i for i, d in enumerate(info["days"]) if args.season[0] <= d[5:] <= args.season[1]]
@@ -68,23 +88,36 @@ def main() -> None:
         dyn, _ = cube._arrays(str(year))
         for li in pick:
             sl = np.asarray(dyn[li])                              # (H, W, 42)
+            f2d = sl[:, :, 0] > 0
+            fpat = maximum_filter(f2d, size=13)                   # Feuer im 13x13-Ausschnitt
             m = rng.random(vr.size) < args.pixel_frac
             r, c = vr[m], vc[m]
             xs.append(sl[r, c][:, FWI_CH])
-            fs.append(sl[r, c, 0] > 0)
+            fp.append(f2d[r, c]); fpatch.append(fpat[r, c]); iv.append(in_valid[m])
         print(f"[hnm] {year}: {len(pick)} Tage", flush=True)
-    X = np.concatenate(xs).astype(np.float64)
-    fire = np.concatenate(fs)
-    print(f"[hnm] Pool: {X.shape[0]:,} Pixeltage, davon {fire.sum():,} mit Feuer "
-          f"({100 * fire.mean():.3f} %)")
+    X_all = np.concatenate(xs).astype(np.float64)
+    fire_px, fire_patch, is_valid = np.concatenate(fp), np.concatenate(fpatch), np.concatenate(iv)
+    print(f"[hnm] Pool Land/Kanada: {X_all.shape[0]:,} Pixeltage; Feuer am Pixel "
+          f"{fire_px.sum():,}, im Ausschnitt {fire_patch.sum():,}; davon in valid "
+          f"{is_valid.sum():,}")
 
-    p99 = np.percentile(X, 99, axis=0)
-    p99 = np.where(p99 > 0, p99, 1.0)
+    variants = {
+        "valid/pixel": (is_valid, fire_px),
+        "valid/patch": (is_valid, fire_patch),
+        "land_canada/pixel": (np.ones_like(is_valid), fire_px),
+        "land_canada/patch": (np.ones_like(is_valid), fire_patch),
+    }
+    weights_by = {}
+    for name, (sel, fire_v) in variants.items():
+        p99_v, d_v, w_v = calibrate(X_all[sel], fire_v[sel])
+        weights_by[name] = {"p99": p99_v.tolist(), "d": d_v.tolist(), "w": w_v.tolist()}
+
+    # Standard fuer die Messung an den Caches: valid/pixel
+    X, fire = X_all[is_valid], fire_px[is_valid]
+    p99, d, w = calibrate(X, fire)
     Xn = np.minimum(X / p99, 1.0)
     mu_f, mu_n = Xn[fire].mean(0), Xn[~fire].mean(0)
     sd_n = Xn[~fire].std(0)
-    d = np.maximum(0.0, (mu_f - mu_n) / np.where(sd_n > 0, sd_n, 1.0))
-    w = d / d.sum() if d.sum() > 0 else np.full(6, 1 / 6)
     s_pool = (Xn * w).sum(1)
     med = float(np.median(s_pool[~fire]))
     print("\n[hnm] Komponente   P99    mu_Feuer  mu_kein   sd_kein   d_i     w_i")
@@ -103,7 +136,11 @@ def main() -> None:
         Xc = np.load(dd / "X.npy", mmap_mode="r")                 # (N, T, 55, 13, 13)
         y = np.load(dd / "y.npy")
         split = np.load(dd / "split.npy")
-        sc = score(np.asarray(Xc[:, -1, 19:25, 6, 6]), p99, w)
+        raw = np.asarray(Xc[:, -1, 19:25, 6, 6]).astype(np.float64)
+        tr = split == "train"
+        p_c, d_c, w_c = calibrate(raw[tr], y[tr] == 1)
+        weights_by[f"cache_train/{cache}"] = {"p99": p_c.tolist(), "d": d_c.tolist(), "w": w_c.tolist()}
+        sc = score(raw, p99, w)
         out[cache] = {}
         for sp in ("train", "val", "test"):
             for lab, name in ((1, "positive"), (0, "negative")):
@@ -124,6 +161,10 @@ def main() -> None:
                      ("cache_A", "cache_G"), ("cache_H", "cache_Y")):
             r = ks_2samp(neg_s[(a, sp)], neg_s[(b, sp)])
             ks[f"{sp}:{a}|{b}"] = {"ks": float(r.statistic), "p": float(r.pvalue)}
+    print("\n[hnm] Gewichte je Lesart von Trainingsset und Feuer (Ziel laut Paper: FFMC 0,152)")
+    print("    " + " " * 26 + "  ".join(f"{n:>5s}" for n in NAMES))
+    for name, v in weights_by.items():
+        print(f"    {name:26s}" + "  ".join(f"{x:5.3f}" for x in v["w"]))
     print("\n[hnm] KS-Abstand der Negativ-Verteilungen von s:")
     for k, v in ks.items():
         print(f"    {k:28s} KS {v['ks']:.3f}  p {v['p']:.1e}")
@@ -140,6 +181,7 @@ def main() -> None:
         "sd_nofire": sd_n.tolist(), "d": d.tolist(), "w": w.tolist(),
         "pool_median_nofire": med,
         "caches": out, "ks_negatives": ks,
+        "weights_by_reading": weights_by, "target_ffmc_weight_paper": 0.152,
     })
 
 
