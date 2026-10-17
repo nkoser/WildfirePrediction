@@ -42,6 +42,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from wildfire.audit.common import assert_readonly, load_config, write_manifest
+from wildfire.paper import extra
 from wildfire.paper.channels import CHANNELS
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
 from wildfire.paper.prepare import FIRE_CH, LANDCOVER_CH
@@ -228,6 +229,8 @@ def main() -> None:
     ap.add_argument("--patience", type=int, default=6)
     ap.add_argument("--select", choices=["val_bce", "last"], default="val_bce",
                     help="Modellauswahl: bestes nach Val-BCE oder letzte Epoche (feste Epochenzahl)")
+    ap.add_argument("--extra", choices=extra.MODES, default="none",
+                    help="zusaetzliche Train-Stichproben aus 2000-2019 (paper_extra.py) anhaengen")
     ap.add_argument("--target", choices=["cache", "next_patch", "next_centre"], default="cache",
                     help="cache: /labels (Feuer im Ausschnitt an D); next_*: Feuer an D+1 (next_labels.py)")
     args = ap.parse_args()
@@ -242,6 +245,10 @@ def main() -> None:
     y = np.load(d / ("y.npy" if args.target == "cache" else f"y_{args.target}.npy")).astype(int)
     print(f"[rec] Ziel {args.target}: Basisrate {y.mean():.3f}", flush=True)
     split = np.load(d / "split.npy")
+    if args.extra != "none":
+        if args.target == "next_centre":
+            raise SystemExit("ABBRUCH: --extra gibt es fuer cache und next_patch")
+        X, y, split = extra.append(X, y, split, extra.load(exp, args.target, args.extra))
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     L = X.shape[1]
     print(f"[rec] {args.cache}: X {X.shape} in {time.time() - t_load:.0f} s auf {device}")
@@ -289,7 +296,7 @@ def main() -> None:
     np.savez_compressed(pred_path, **preds)
     write_manifest(cfg, f"p2_reconstruct_{args.cache}_{args.norm}{args.run_name}", args.config, {
         "predictions": str(pred_path),
-        "cache": args.cache, "norm": args.norm, "norm_info": ninfo, "target": args.target,
+        "cache": args.cache, "norm": args.norm, "norm_info": ninfo, "target": args.target, "extra": args.extra, "n_train": int(idx["train"].size),
         "model": "UNet3D, Breite 32, 2 Pooling-Stufen, globales Pooling, BCE",
         "training": {"bs": args.bs, "lr": args.lr, "max_epochs": args.epochs, "patience": args.patience,
                      "optimizer": "AdamW, weight_decay 1e-4", "selection": args.select},

@@ -45,7 +45,7 @@ from wildfire.paper.channels import CHANNELS, has_fire, masked_std, summary_colu
 from wildfire.paper.channels import tag as channel_tag
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
 from wildfire.paper.prepare import FIRE_CH
-from wildfire.paper import targets
+from wildfire.paper import extra, targets
 from wildfire.paper.reconstruct import UNet3D, as_float, cache_norm, gather_windows, to_device_once
 
 DTS = (1, 7, 15, 30)
@@ -215,6 +215,8 @@ def main() -> None:
                     help="Lauf von 42_paper_reconstruct, dessen Vorhersagen unet3d_dt liest "
                          "(Datei rec_<cache>_cache<unet-run><Kanal-Tag>.npz)")
     ap.add_argument("--tag", default="", help="Zusatz am Manifestnamen")
+    ap.add_argument("--extra", choices=extra.MODES, default="none",
+                    help="zusaetzliche Train-Stichproben aus 2000-2019 (paper_extra.py) anhaengen")
     ap.add_argument("--target", choices=targets.TARGETS, default="cache",
                     help="cache: Feuer an D; next_patch: Feuer an D+1, Fenster einen Tag spaeter (targets.py)")
     args = ap.parse_args()
@@ -228,6 +230,8 @@ def main() -> None:
     X = np.load(d / "X.npy")                                 # (N, 61, 55, 13, 13)
     y = targets.labels(d, args.target)
     split = np.load(d / "split.npy")
+    if args.extra != "none":
+        X, y, split = extra.append(X, y, split, extra.load(exp, args.target, args.extra))
     L = X.shape[1] + targets.shift(args.target)          # effektive Laenge: Zieltag = Index L - 1
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     print(f"[cmp] {args.cache}: X {X.shape} in {time.time() - t_load:.0f} s auf {device}")
@@ -339,9 +343,9 @@ def main() -> None:
                 a = res[mth][str(dt_)]["summary"]
                 print(f"    dt={dt_:2d} {mth:13s} " + "  ".join(f"{a[k]['mean']:.3f}" for k in KEYS))
 
-    name = f"p5_compare_{args.cache}" + ("_centre" if args.test_label == "centre" else "") + targets.tag(args.target) + ctag + args.tag
+    name = f"p5_compare_{args.cache}" + ("_centre" if args.test_label == "centre" else "") + targets.tag(args.target) + extra.tag(args.extra) + ctag + args.tag
     write_manifest(cfg, name, args.config, {
-        "test_label": args.test_label, "target": args.target,
+        "test_label": args.test_label, "target": args.target, "extra": args.extra,
         "cache": args.cache, "dts": list(DTS), "T": T, "seeds": args.seeds,
         "labels": "Cache-Labels (Paper-GT)", "channels": args.channels,
         "channel_list": CHANNELS[args.channels], "unet3d_dt_from": f"rec_{args.cache}_cache{args.unet_run}{ctag}.npz",

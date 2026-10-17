@@ -87,14 +87,14 @@ def fire_keys(dataset_root: Path, dates_index: dict[str, int], W: int) -> np.nda
     return k
 
 
-def window(cube: CubeReader, L: int, r: int, c: int) -> np.ndarray:
-    """(30, 55, 13, 13) uint8 bis einschliesslich L, Cache-Reihenfolge, Rand genullt."""
+def window(cube: CubeReader, L: int, r: int, c: int, T: int = T_WIN) -> np.ndarray:
+    """(T, 55, 13, 13) uint8 bis einschliesslich L, Cache-Reihenfolge, Rand genullt."""
     year, li = cube._pos[L]
     dyn, stat = cube._arrays(year)
-    out = np.zeros((T_WIN, 55, 2 * HALF + 1, 2 * HALF + 1), np.uint8)
+    out = np.zeros((T, 55, 2 * HALF + 1, 2 * HALF + 1), np.uint8)
     r0, r1 = max(0, r - HALF), min(cube.H, r + HALF + 1)
     c0, c1 = max(0, c - HALF), min(cube.W, c + HALF + 1)
-    d = np.asarray(dyn[li - T_WIN + 1:li + 1, r0:r1, c0:c1, :])      # (30, h, w, 42)
+    d = np.asarray(dyn[li - T + 1:li + 1, r0:r1, c0:c1, :])          # (T, h, w, 42)
     s = np.asarray(stat[r0:r1, c0:c1, :])                           # (h, w, 13)
     rs, cs = slice(r0 - (r - HALF), r1 - (r - HALF)), slice(c0 - (c - HALF), c1 - (c - HALF))
     for ch, (src, i) in enumerate(CACHE_FROM_CUBE):
