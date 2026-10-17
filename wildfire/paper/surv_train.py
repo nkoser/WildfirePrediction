@@ -16,6 +16,14 @@ intervallzensierte Likelihood. Jede Abfrage tau in [0, 100] ist moeglich.
 Zwei Varianten:
   all   alle Stichtage
   new   nur Stichtage ohne Feuer im Ausschnitt in L-6 .. L ("neue Braende")
+
+Zwei Ziele (--target):
+  patch   erstes Feuer irgendwo im 13 x 13-Ausschnitt (Labeldefinition des Papers)
+  centre  erstes Feuer nur an der Mittelzelle; die Nachbarschaft bleibt Eingabe.
+          "new" heisst dann: kein Feuer an der Mittelzelle in L-6 .. L, und
+          km_fire trennt nach Feuer an der Mittelzelle im Fenster.
+Im Paper-Protokoll wird zusaetzlich gegen das Mittelzellen-Label des Tests
+bewertet (Schluessel *_centre_label).
 """
 
 from __future__ import annotations
@@ -34,10 +42,12 @@ from wildfire.eval.metrics import evaluate
 from sklearn.linear_model import LogisticRegression
 
 from wildfire.models.bernstein import BernsteinSurvivalHead, bernstein_nll
+from wildfire.paper.channels import CHANNELS, has_fire, masked_std, summary_columns
+from wildfire.paper.channels import tag as channel_tag
 from wildfire.paper.metrics import paper_metrics
 from wildfire.paper.compare import MLP
 from wildfire.paper.prepare import FIRE_CH
-from wildfire.paper.reconstruct import cache_norm
+from wildfire.paper.reconstruct import as_float, cache_norm, to_device_once
 from wildfire.paper.stdctm import CrossBlock, DayEncoder
 
 H = 100
@@ -104,8 +114,14 @@ def summaries(X):
     return np.concatenate([s[:, -1], s[:, -7:].mean(1), s.mean(1), s.min(1), s.max(1)], 1)
 
 
+def fire_in_window(X, target):
+    """Feuer im Fenster: irgendwo im Ausschnitt (patch) oder an der Mittelzelle (centre)."""
+    f = X[:, :, FIRE_CH] > 0                                # (n, 30, 13, 13)
+    return f.any(axis=(1, 2, 3)) if target == "patch" else f[:, :, 6, 6].any(axis=1)
+
+
 def norm_batch(xb, mean, std, device):
-    t = torch.from_numpy(np.ascontiguousarray(xb)).to(device).float()
+    t = as_float(xb, device)                                  # numpy oder schon auf der GPU
     return (t - torch.from_numpy(mean).to(device)[None, None, :, None, None]) / \
         torch.from_numpy(std).to(device)[None, None, :, None, None]
 
@@ -168,6 +184,10 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--paper-eval", action="store_true",
                     help="zusaetzlich im Verschiebe-Protokoll des Papers auswerten (Variante all)")
+    ap.add_argument("--target", choices=["patch", "centre"], default="patch",
+                    help="Ereignis: erstes Feuer irgendwo im Ausschnitt oder nur an der Mittelzelle")
+    ap.add_argument("--channels", choices=list(CHANNELS), default="paper55",
+                    help="Eingabekanaele; Ereignisse kommen weiter aus der Feuermaske")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
@@ -175,6 +195,12 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d = exp / "derived_data" / "paper_surv" / args.cache
     mean, std, _ = cache_norm(Path(cfg["dataset_root"]) / args.cache / "norm_stats.npz")
+    std = masked_std(std, args.channels)                      # gestrichene Kanaele -> Eingabe 0
+    cols = summary_columns(args.channels)
+    if "km_fire" in args.methods and not has_fire(args.channels):
+        print("[surv] km_fire uebersprungen: es trennt nur nach der Feuermaske", flush=True)
+        args.methods = [m for m in args.methods if m != "km_fire"]
+    print(f"[surv] Kanalsatz {args.channels}: {len(CHANNELS[args.channels])} Kanaele", flush=True)
 
     t0 = time.time()
     data = {}
@@ -182,7 +208,10 @@ def main() -> None:
         z = np.load(d / f"{part}_meta.npz")
         data[part] = {k: z[k] for k in z.files}
         data[part]["X"] = np.load(d / f"{part}_X.npy")
-        data[part]["fire_win"] = (data[part]["X"][:, :, FIRE_CH] > 0).any(axis=(1, 2, 3))
+        if args.target == "centre":
+            for k in ("event", "t_event", "recent_fire"):
+                data[part][k] = data[part][f"{k}_centre"]
+        data[part]["fire_win"] = fire_in_window(data[part]["X"], args.target)
     print(f"[surv] geladen in {time.time() - t0:.0f} s: " + ", ".join(
         f"{p} {v['X'].shape[0]} (Ereignisse {v['event'].mean():.2f})" for p, v in data.items()), flush=True)
 
@@ -198,6 +227,9 @@ def main() -> None:
         paper = {"X": np.load(pdir / "X.npy", mmap_mode="r"), "y": np.load(pdir / "y.npy").astype(int),
                  "idx": {s: np.where(sp == s)[0] for s in ("val", "test")}}
         paper["L"] = paper["X"].shape[1]
+        # Mittelzellen-Label: Feuermaske an t in der Mittelzelle (Positive mit Feuer nur
+        # bei Nachbarn zaehlen hier als 0). Auf val identisch mit dem Paper-Label.
+        paper["yc"] = (np.asarray(paper["X"][paper["idx"]["test"], -1, FIRE_CH, 6, 6]) > 0).astype(int)
 
     def pwin(rows, dt_):
         t1 = paper["L"] - dt_ - 1
@@ -223,12 +255,14 @@ def main() -> None:
         pres[name] = {}
         for dt_ in PDTS:
             for si, score in enumerate(("F_k", "first_on_day_k")):
-                ms = []
+                ms, mc = [], []
                 for c in curves_per_seed:
                     pl = LogisticRegression(C=1e6).fit(lg(c["val"][dt_][si])[:, None], yv)
-                    ms.append(paper_metrics(pl.predict_proba(lg(c["test"][dt_][si])[:, None])[:, 1], yt))
-                pres[name].setdefault(score, {})[str(dt_)] = {
-                    k: float(np.mean([m[k] for m in ms])) for k in ms[0] if isinstance(ms[0][k], float)}
+                    pt = pl.predict_proba(lg(c["test"][dt_][si])[:, None])[:, 1]
+                    ms.append(paper_metrics(pt, yt)); mc.append(paper_metrics(pt, paper["yc"]))
+                for sc, mm in ((score, ms), (score + "_centre_label", mc)):
+                    pres[name].setdefault(sc, {})[str(dt_)] = {
+                        k: float(np.mean([m[k] for m in mm])) for k in mm[0] if isinstance(mm[0][k], float)}
             f = pres[name]["F_k"][str(dt_)]
             print(f"[paper] {name:9s} dt={dt_:2d} F(k): PR-AUC {f['pr_auc']:.3f} ROC {f['roc_auc']:.3f} "
                   f"F1 {f['f1']:.3f} ECE {f['ece']:.3f} Brier {f['brier']:.3f}", flush=True)
@@ -269,11 +303,11 @@ def main() -> None:
             report("km_fire", [np.stack([hs[bool(f)] for f in te["fire_win"]])])
             if paper and var == "all":
                 paper_record("km_fire", [paper_curves(lambda w: np.stack(
-                    [hs[bool(f)] for f in (w[:, :, FIRE_CH] > 0).any(axis=(1, 2, 3))]))])
+                    [hs[bool(f)] for f in fire_in_window(w, args.target)]))])
 
         init_cif = float(1 - np.prod(1 - km_hazard(tr["event"], tr["t_event"])))
         if "mlp_dctm" in args.methods:
-            S = {p: summaries(D[p]["X"]) for p in D}
+            S = {p: summaries(D[p]["X"])[:, cols] for p in D}
             mu, sd = S["train"].mean(0), S["train"].std(0) + 1e-6
             S = {p: torch.from_numpy(((v - mu) / sd).astype(np.float32)).to(device) for p, v in S.items()}
             per, pc = [], []
@@ -290,17 +324,21 @@ def main() -> None:
                 per.append(hazards(net, lambda b: S["test"][torch.from_numpy(b).to(device)], len(te["event"]), device))
                 if paper and var == "all":
                     pc.append(paper_curves(lambda w, net=net: net_haz(net, torch.from_numpy(
-                        ((summaries(w) - mu) / sd).astype(np.float32)).to(device))))
+                        ((summaries(w)[:, cols] - mu) / sd).astype(np.float32)).to(device))))
             report("mlp_dctm", per)
             if pc:
                 paper_record("mlp_dctm", pc)
 
         if "st_dctm" in args.methods:
             per, pc = [], []
+            XG = {p: to_device_once(D[p]["X"], device, f"{p}_X") for p in D}   # einmal auf die GPU
+
+            def take(Xp, b):
+                return Xp[torch.from_numpy(b).to(Xp.device)] if isinstance(Xp, torch.Tensor) else Xp[b]
             for seed in args.seeds:
                 print(f"    st_dctm seed {seed}", flush=True)
                 net = SurvNet(STEncoder(), 128, init_cif).to(device)
-                gx = {p: (lambda b, p=p: norm_batch(D[p]["X"][b], mean, std, device)) for p in D}
+                gx = {p: (lambda b, p=p: norm_batch(take(XG[p], b), mean, std, device)) for p in D}
 
                 def vf(n):
                     n.eval()
@@ -321,25 +359,32 @@ def main() -> None:
             report("st_dctm", per)
             if pc:
                 paper_record("st_dctm", pc)
+            del XG
 
-    write_manifest(cfg, f"p8_surv_{args.cache}", args.config, {
-        "cache": args.cache, "follow_up_days": H, "horizons": list(HZ), "seeds": args.seeds,
+    name = f"p8_surv_{args.cache}" + ("_centre" if args.target == "centre" else "") + channel_tag(args.channels)
+    write_manifest(cfg, name, args.config, {
+        "cache": args.cache, "target": args.target, "follow_up_days": H, "horizons": list(HZ), "seeds": args.seeds,
+        "channels": args.channels, "channel_list": CHANNELS[args.channels],
         "dctm_head": "Bernstein Grad 12 auf [0,100], monoton, S(0)=1, intervallzensierte Likelihood",
         "note": "Stichtage an Paper-Stichproben gebunden (1/3 Feuertage); Ereignisrate weit ueber der echten",
         "results": res,
         "paper_protocol": pres,
     })
 
-    if pres:
-        ref = json.loads((exp / "data_manifests" / f"p5_compare_{args.cache}.json").read_text())["results"]
-        print(f"\n[paper] {args.cache} TEST, PR-AUC / ROC-AUC im Verschiebe-Protokoll (Survival: F(k))")
+    for label, sfx in (("Paper-Label", ""), ("Mittelzellen-Label", "_centre_label")):
+        ref_path = exp / "data_manifests" / f"p5_compare_{args.cache}{'_centre' if sfx else ''}.json"
+        if not pres or not ref_path.exists():
+            continue
+        ref = json.loads(ref_path.read_text())["results"]
+        print(f"\n[paper] {args.cache} TEST, {label}, PR-AUC / ROC-AUC im Verschiebe-Protokoll (Survival: F(k))")
         for dt_ in PDTS:
             row = [f"dt={dt_:2d}"]
             for m in ("unet3d_dt", "hgb_dt", "mlp_multi"):
-                a = ref[m][str(dt_)]["summary"]
-                row.append(f"{m} {a['pr_auc']['mean']:.3f}/{a['roc_auc']['mean']:.3f}")
+                if m in ref:
+                    a = ref[m][str(dt_)]["summary"]
+                    row.append(f"{m} {a['pr_auc']['mean']:.3f}/{a['roc_auc']['mean']:.3f}")
             for m in pres:
-                a = pres[m]["F_k"][str(dt_)]
+                a = pres[m]["F_k" + sfx][str(dt_)]
                 row.append(f"{m} {a['pr_auc']:.3f}/{a['roc_auc']:.3f}")
             print("    " + "   ".join(row))
 

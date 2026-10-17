@@ -21,6 +21,12 @@ mit L = t die Fenster byte-genau mit dem Cache.
 Zusaetzlich je Stichtag das Merkmal ``recent_fire``: Feuer im Ausschnitt in
 L-6 .. L. Damit laesst sich die Variante "nur neue Braende" bilden.
 
+Mit ``--centre-events`` werden fuer die schon vorhandenen Stichtage (gleiche
+Fenster, keine neue Extraktion) zusaetzlich die Ereignisse der Mittelzelle
+allein in die Meta-Dateien geschrieben: ``event_centre``, ``t_event_centre``,
+``recent_fire_centre`` (Feuer an der Mittelzelle in L-6 .. L). Der Zieltag t
+zaehlt dort, wenn die Feuermaske des Caches an t in der Mittelzelle 1 ist.
+
 Hinweis zur Ziehung: Die Stichtage haengen an den Paper-Stichproben, die zu
 einem Drittel Feuertage sind. Die Ereignisrate ist deshalb weit hoeher als in
 der Wirklichkeit; Rangordnung und Form der Kurven sind auswertbar, die
@@ -105,6 +111,8 @@ def main() -> None:
     ap.add_argument("--cache", default="cache_G")
     ap.add_argument("--per-sample", nargs=3, type=int, default=[8, 2, 2],
                     metavar=("TRAIN", "VAL", "TEST"))
+    ap.add_argument("--centre-events", action="store_true",
+                    help="nur Ereignisse der Mittelzelle zu den vorhandenen Stichtagen ergaenzen")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
@@ -131,8 +139,8 @@ def main() -> None:
     dr, dc = np.meshgrid(np.arange(-HALF, HALF + 1), np.arange(-HALF, HALF + 1), indexing="ij")
     dr, dc = dr.ravel(), dc.ravel()
 
-    def first_fire_after(Ls, rr, cc):
-        """Erster Feuertag > L im Ausschnitt (oder sehr gross) und Feuer in L-6..L."""
+    def first_fire_after(Ls, rr, cc, dr=dr, dc=dc):
+        """Erster Feuertag > L in den Zellen rr+dr, cc+dc (oder sehr gross) und Feuer in L-6..L."""
         R = rr[:, None] + dr[None]; C = cc[:, None] + dc[None]
         ok = (R >= 0) & (R < cube.H) & (C >= 0) & (C < W)
         flat = np.where(ok, R * W + C, 0).astype(np.int64)
@@ -149,6 +157,46 @@ def main() -> None:
 
     out_dir = exp / "derived_data" / "paper_surv" / args.cache
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.centre_events:
+        # Feuermaske des Caches an t in der Mittelzelle (letzter Tag des T=30-Fensters)
+        cache_X = np.load(pdir / "X.npy", mmap_mode="r")
+        y_c = np.array([cache_X[i, -1, 0, HALF, HALF] > 0 for i in range(len(D))])
+        zero = np.zeros(1, np.int64)
+        summary = {}
+        for part in ("train", "val", "test"):
+            z = dict(np.load(out_dir / f"{part}_meta.npz"))
+            si, Ls = z["sample"], z["L"]
+            day, recent = first_fire_after(Ls, rows[si], cols[si], zero, zero)
+            day = np.where(y_c[si], np.minimum(day, D[si]), day)
+            tte = day - Ls
+            z["event_centre"] = (tte <= H_FOLLOW).astype(np.int8)
+            z["t_event_centre"] = np.minimum(tte, H_FOLLOW).astype(np.int16)
+            z["recent_fire_centre"] = recent
+            z["y_target_centre"] = y_c[si].astype(np.int8)
+            np.savez(out_dir / f"{part}_meta.npz", **z)
+            ev, te_ = z["event_centre"], z["t_event_centre"]
+            summary[part] = {
+                "n_landmarks": int(si.size),
+                "event_rate_patch": float(z["event"].mean()),
+                "event_rate_centre": float(ev.mean()),
+                "event_rate_centre_without_recent_centre_fire": float(ev[~recent].mean()),
+                "share_recent_centre_fire": float(recent.mean()),
+                "centre_event_implies_patch_event": float((z["event"][ev == 1] == 1).mean()),
+                "t_event_centre_quantiles_events": {q: float(np.percentile(te_[ev == 1], q))
+                                                    for q in (10, 25, 50, 75, 90)} if ev.any() else {},
+            }
+            print(f"[surv] {part} Mittelzelle: {summary[part]}", flush=True)
+        write_manifest(cfg, f"p7_surv_prepare_{args.cache}_centre", args.config, {
+            "cache": args.cache, "follow_up_days": H_FOLLOW,
+            "event_definition": "erster Tag > L mit MODIS-Feuer (MCD14A1, unmaskiert) an der Mittelzelle; "
+                                "Zieltag t zusaetzlich, wenn die Cache-Feuermaske dort an t 1 ist",
+            "landmarks": "dieselben wie p7_surv_prepare (gleiche Fenster)",
+            "share_samples_with_centre_fire_on_t": {s: float(y_c[split == s].mean()) for s in ("train", "val", "test")},
+            "parts": summary,
+        })
+        return
+
     summary = {}
     for part, m in zip(("train", "val", "test"), args.per_sample):
         idx = np.where(split == part)[0]

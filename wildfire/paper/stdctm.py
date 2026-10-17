@@ -39,7 +39,9 @@ import torch.nn.functional as F
 from wildfire.audit.common import assert_readonly, load_config, write_manifest
 from wildfire.models.bernstein import bernstein_basis
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
-from wildfire.paper.reconstruct import cache_norm
+from wildfire.paper.channels import CHANNELS, masked_std
+from wildfire.paper.channels import tag as channel_tag
+from wildfire.paper.reconstruct import as_float, cache_norm, gather_windows, to_device_once
 
 T = 30
 PAPER_DTS = (1, 7, 15, 30)
@@ -110,8 +112,8 @@ class STDCTM(nn.Module):
 
 
 def batch(X, rows, dts, L, mean, std, device):
-    xb = np.stack([X[r, L - d - 1 - T:L - d - 1] for r, d in zip(rows, dts)])   # (B, T, C, H, W)
-    xb = torch.from_numpy(xb).to(device).float()
+    """(B, T, C, H, W) normiert; X numpy oder GPU-Tensor."""
+    xb = as_float(gather_windows(X, rows, L - np.asarray(dts) - 1 - T, T), device)
     m = torch.from_numpy(mean).to(device)[None, None, :, None, None]
     s = torch.from_numpy(std).to(device)[None, None, :, None, None]
     return (xb - m) / s
@@ -175,6 +177,8 @@ def main() -> None:
     ap.add_argument("--cache", required=True)
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--dt-modes", nargs="+", default=["paper4", "all30"])
+    ap.add_argument("--channels", choices=list(CHANNELS), default="paper55",
+                    help="Eingabekanaele; gestrichene Kanaele gehen als 0 ins Netz")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
@@ -189,7 +193,10 @@ def main() -> None:
     L = X.shape[1]
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     mean, std, _ = cache_norm(Path(cfg["dataset_root"]) / args.cache / "norm_stats.npz")
+    std = masked_std(std, args.channels)
+    X = to_device_once(X, device)
     n_par = sum(p.numel() for p in STDCTM().parameters())
+    print(f"[st] Kanalsatz {args.channels}: {len(CHANNELS[args.channels])} Kanaele", flush=True)
     print(f"[st] {args.cache}: X {X.shape} in {time.time() - t0:.0f} s auf {device}, "
           f"Modell {n_par / 1e6:.2f} Mio. Parameter")
 
@@ -213,8 +220,9 @@ def main() -> None:
             print(f"[st] {mode:6s} dt={dt:2d}  " + "  ".join(
                 f"{k} {agg[k]['mean']:.3f}" for k in ("f1", "pr_auc", "roc_auc", "ece", "brier")), flush=True)
 
-    write_manifest(cfg, f"p6_stdctm_{args.cache}", args.config, {
-        "cache": args.cache, "T": T, "paper_dts": list(PAPER_DTS), "extra_dts": list(EXTRA_DTS),
+    write_manifest(cfg, f"p6_stdctm_{args.cache}{channel_tag(args.channels)}", args.config, {
+        "cache": args.cache, "channels": args.channels, "channel_list": CHANNELS[args.channels],
+        "T": T, "paper_dts": list(PAPER_DTS), "extra_dts": list(EXTRA_DTS),
         "model": "STDCTM: Tages-CNN -> Gedaechtnis (29 Tokens) -> Self-Attention -> 2x Cross-Attention "
                  "-> Bernstein-Kopf ueber den Vorlauf (Grad 8, K = 31), BCE",
         "head_note": "auf Paper-Labels Wahrscheinlichkeit fuer Feuer genau am Tag t, nicht monoton",

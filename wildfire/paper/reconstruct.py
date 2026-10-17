@@ -42,19 +42,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from wildfire.audit.common import assert_readonly, load_config, write_manifest
+from wildfire.paper.channels import CHANNELS
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
 from wildfire.paper.prepare import FIRE_CH, LANDCOVER_CH
 from wildfire.paper.run import channel_stats
-
-CHANNELS = {
-    "paper55": list(range(55)),
-    "no_fire": [c for c in range(55) if c != FIRE_CH],
-    # ohne jede MODIS-Beobachtung (Feuer, Vegetation, Reflexion, LST, BT):
-    # Wetter, Feuerwetter, VPD, Infrastruktur, Gelaende, Landbedeckung
-    "no_modis": [c for c in range(55) if c != FIRE_CH and not 38 <= c <= 53],
-    # nur Wetter, Feuerwetter und VPD
-    "weather": list(range(1, 26)),
-}
 
 
 def block3d(cin: int, cout: int) -> nn.Sequential:
@@ -77,15 +68,17 @@ class UNet3D(nn.Module):
         nn.init.zeros_(self.head.weight)
         nn.init.constant_(self.head.bias, -0.693)           # logit(1/3)
 
-    def forward(self, x):                                   # (B, C, T, H, W)
+    def decode(self, x):                                    # (B, C, T, H, W) -> (B, w, T, H, W)
         s1 = self.enc1(x)
         s2 = self.enc2(F.max_pool3d(s1, 2, ceil_mode=True))
         b = self.bott(F.max_pool3d(s2, 2, ceil_mode=True))
         d2 = self.dec2(torch.cat([F.interpolate(b, size=s2.shape[2:], mode="trilinear",
                                                 align_corners=False), s2], 1))
-        d1 = self.dec1(torch.cat([F.interpolate(d2, size=s1.shape[2:], mode="trilinear",
-                                                align_corners=False), s1], 1))
-        return self.head(self.drop(d1.mean(dim=(2, 3, 4)))).squeeze(-1)
+        return self.dec1(torch.cat([F.interpolate(d2, size=s1.shape[2:], mode="trilinear",
+                                                  align_corners=False), s1], 1))
+
+    def forward(self, x):                                   # (B, C, T, H, W)
+        return self.head(self.drop(self.decode(x).mean(dim=(2, 3, 4)))).squeeze(-1)
 
 
 def cache_norm(path: Path, n_ch: int = 55):
@@ -113,13 +106,54 @@ def cache_norm(path: Path, n_ch: int = 55):
     return full_m.astype(np.float32), full_s.astype(np.float32), info
 
 
+def to_device_once(X: np.ndarray, device: torch.device, name: str = "X"):
+    """Ganzes uint8-Array einmal auf die GPU; ohne GPU bleibt es ein numpy-Array.
+
+    Ausschneiden und Kopieren je Batch aus dem RAM war sonst der Engpass: die GPU
+    wartete die meiste Zeit (Batch 512: 2,5 min je Epoche statt 3 s).
+    """
+    if device.type != "cuda":
+        return X
+    t = time.time()
+    Xt = torch.from_numpy(np.ascontiguousarray(X)).to(device)
+    print(f"[gpu] {name} {tuple(Xt.shape)} ({Xt.numel() / 1e9:.1f} GB) auf {device} in {time.time() - t:.0f} s",
+          flush=True)
+    return Xt
+
+
+def gather_windows(X, rows, starts, T: int):
+    """(B, T, C, H, W): je Zeile rows[i] die Tage starts[i] .. starts[i] + T - 1.
+
+    X ist ein numpy-Array (Ergebnis numpy) oder ein torch-Tensor (Ergebnis auf
+    dessen Geraet, ein einziger Gather ohne Umweg ueber den RAM).
+    """
+    rows, starts = np.asarray(rows, np.int64), np.asarray(starts, np.int64)
+    if isinstance(X, torch.Tensor):
+        r = torch.from_numpy(rows).to(X.device)
+        t = torch.from_numpy(starts).to(X.device)[:, None] + torch.arange(T, device=X.device)
+        return X[r[:, None], t]
+    return np.stack([X[r, s:s + T] for r, s in zip(rows, starts)])
+
+
+def as_float(xb, device):
+    """numpy- oder Tensor-Batch -> float-Tensor auf device."""
+    return (xb if isinstance(xb, torch.Tensor) else torch.from_numpy(np.ascontiguousarray(xb))).to(device).float()
+
+
 def loader(X, idx, chs, t0, t1, mean, std, bs, device, rng=None):
+    """X: numpy-Array im RAM oder torch-Tensor (dann wird direkt dort ausgeschnitten)."""
     order = rng.permutation(idx) if rng is not None else idx
     m = torch.from_numpy(mean[chs]).to(device)[None, :, None, None, None]
     s = torch.from_numpy(std[chs]).to(device)[None, :, None, None, None]
+    on_tensor = isinstance(X, torch.Tensor)
+    if on_tensor:
+        chs_t = torch.as_tensor(list(chs), device=X.device)
     for a in range(0, order.size, bs):
         sel = np.sort(order[a:a + bs])
-        xb = torch.from_numpy(X[sel, t0:t1][:, :, chs]).to(device).float()   # (B, T, C, H, W)
+        if on_tensor:
+            xb = X[torch.from_numpy(sel).to(X.device), t0:t1].index_select(2, chs_t).to(device).float()
+        else:
+            xb = torch.from_numpy(X[sel, t0:t1][:, :, chs]).to(device).float()   # (B, T, C, H, W)
         yield sel, (xb.permute(0, 2, 1, 3, 4) - m) / s                         # (B, C, T, H, W)
 
 
@@ -135,7 +169,10 @@ def predict(net, X, idx, chs, t0, t1, mean, std, device, bs=128):
     return np.clip(p, 1e-7, 1 - 1e-7)
 
 
-def fit(X, y, idx, chs, t0, t1, mean, std, device, seed, epochs=40, patience=6, bs=64, lr=1e-3):
+def fit(X, y, idx, chs, t0, t1, mean, std, device, seed, epochs=40, patience=6, bs=64, lr=1e-3,
+        select="val_bce"):
+    """select: "val_bce" = bestes Modell nach Val-BCE mit Abbruch nach patience Epochen;
+    "last" = feste Epochenzahl, das Modell nach der letzten Epoche."""
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     net = UNet3D(len(chs)).to(device)
@@ -159,6 +196,8 @@ def fit(X, y, idx, chs, t0, t1, mean, std, device, seed, epochs=40, patience=6, 
         hist.append({"epoch": ep, "train_bce": tl / tn, "val_bce": vl, "val_pr_auc": vm["pr_auc"]})
         print(f"      Epoche {ep:2d}: train {tl / tn:.4f}  val BCE {vl:.4f}  val PR-AUC "
               f"{vm['pr_auc']:.3f}", flush=True)
+        if select == "last":
+            continue
         if vl < best - 1e-4:
             best, bad = vl, 0
             state = {k: v.detach().clone() for k, v in net.state_dict().items()}
@@ -166,7 +205,8 @@ def fit(X, y, idx, chs, t0, t1, mean, std, device, seed, epochs=40, patience=6, 
             bad += 1
             if bad >= patience:
                 break
-    net.load_state_dict(state)
+    if select != "last":
+        net.load_state_dict(state)
     return net, hist
 
 
@@ -181,6 +221,15 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
     ap.add_argument("--run-name", default="",
                     help="Suffix des Manifests, damit Laeufe sich nicht ueberschreiben")
+    # Paper: Mini-Batch 512, Lernrate 1e-4 (Epochen nennt es nicht; Abbruch ueber Val-BCE)
+    ap.add_argument("--bs", type=int, default=64)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--patience", type=int, default=6)
+    ap.add_argument("--select", choices=["val_bce", "last"], default="val_bce",
+                    help="Modellauswahl: bestes nach Val-BCE oder letzte Epoche (feste Epochenzahl)")
+    ap.add_argument("--target", choices=["cache", "next_patch", "next_centre"], default="cache",
+                    help="cache: /labels (Feuer im Ausschnitt an D); next_*: Feuer an D+1 (next_labels.py)")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
@@ -190,7 +239,8 @@ def main() -> None:
 
     t_load = time.time()
     X = np.load(d / "X.npy")                                 # (N, 61, 55, 13, 13)
-    y = np.load(d / "y.npy").astype(int)
+    y = np.load(d / ("y.npy" if args.target == "cache" else f"y_{args.target}.npy")).astype(int)
+    print(f"[rec] Ziel {args.target}: Basisrate {y.mean():.3f}", flush=True)
     split = np.load(d / "split.npy")
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     L = X.shape[1]
@@ -202,6 +252,7 @@ def main() -> None:
         mean, std = channel_stats(X, idx["train"])
         ninfo = {"source": "train split, eigene Rechnung"}
     print(f"[rec] Normierung {args.norm}: {ninfo}")
+    X = to_device_once(X, device)
 
     runs = []
     preds = {"idx_val": idx["val"], "idx_test": idx["test"]}
@@ -213,7 +264,9 @@ def main() -> None:
         print(f"\n[rec] {tag}: Tage D-{T - 1 + end} .. D-{end}, {len(chs)} Kanaele", flush=True)
         for seed in args.seeds:
             t_run = time.time()
-            net, hist = fit(X, y, idx, chs, t0, t1, mean, std, device, seed)
+            net, hist = fit(X, y, idx, chs, t0, t1, mean, std, device, seed,
+                            epochs=args.epochs, patience=args.patience, bs=args.bs, lr=args.lr,
+                            select=args.select)
             p = {s: predict(net, X, idx[s], chs, t0, t1, mean, std, device) for s in ("val", "test")}
             for s in ("val", "test"):
                 preds[f"{tag}_s{seed}_{s}"] = p[s].astype(np.float32)
@@ -236,8 +289,10 @@ def main() -> None:
     np.savez_compressed(pred_path, **preds)
     write_manifest(cfg, f"p2_reconstruct_{args.cache}_{args.norm}{args.run_name}", args.config, {
         "predictions": str(pred_path),
-        "cache": args.cache, "norm": args.norm, "norm_info": ninfo,
+        "cache": args.cache, "norm": args.norm, "norm_info": ninfo, "target": args.target,
         "model": "UNet3D, Breite 32, 2 Pooling-Stufen, globales Pooling, BCE",
+        "training": {"bs": args.bs, "lr": args.lr, "max_epochs": args.epochs, "patience": args.patience,
+                     "optimizer": "AdamW, weight_decay 1e-4", "selection": args.select},
         "metric_assumptions": ASSUMPTIONS, "target_pr_auc_paper": 0.68,
         "runs": runs,
     })

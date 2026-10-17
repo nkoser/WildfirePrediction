@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --time=08:00:00
+#SBATCH --time=16:00:00
 #SBATCH --output=/scratch/shared/nik/Wildfire/logs/%x_%A_%a.out
 #SBATCH --error=/scratch/shared/nik/Wildfire/logs/%x_%A_%a.err
 # ---------------------------------------------------------------------------
@@ -14,10 +14,13 @@
 #   0 -> cache_G, Normierung des Caches
 #   1 -> cache_A, Normierung des Caches
 #   2 -> cache_G, eigene Normierung (Kontrolle)
+# Mit CACHE_LIST="cache_A cache_G cache_H cache_Y" und --array=0-3 laufen
+# stattdessen diese Caches, alle mit der Normierung des Caches.
 # ---------------------------------------------------------------------------
 source /home/nik/workspace/WildfirePrediction/wildfire/slurm/_apptainer.sh
 source /workspace/WildfirePrediction/wildfire/slurm/_common.sh || exit 1
 CACHES=(cache_G cache_A cache_G); NORMS=(cache cache ours)
+if [ -n "${CACHE_LIST:-}" ]; then read -ra CACHES <<< "$CACHE_LIST"; NORMS=("${CACHES[@]/*/cache}"); fi
 i=${SLURM_ARRAY_TASK_ID:?Array-Job erforderlich}
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 "$PY" -m wildfire.paper.reconstruct --config "$CONFIG" --cache "${CACHES[$i]}" \

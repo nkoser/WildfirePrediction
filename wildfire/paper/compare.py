@@ -18,6 +18,11 @@ aber aus den Cache-Kanaelen und ohne Sperre - das Paper sperrt nichts). Keine
 Zusatzmerkmale wie Breite oder Kalendertag, damit alle Methoden genau die
 Information des Caches sehen.
 
+Mit --test-label centre wird nur der Test anders bewertet: positiv ist eine
+Stichprobe, wenn die Feuermaske an t in der Mittelzelle 1 ist (Positive mit
+Feuer nur bei Nachbarn zaehlen als 0). Training und Validierung bleiben beim
+Paper-Label; dort brennt bei allen Positiven ohnehin die Mittelzelle.
+
 Echte Survival-Ziele (erste Zuendung ueber die Zeit) lassen sich aus diesen
 Labels nicht bilden: Es gibt je Stichprobe nur ein Label an einem Tag.
 """
@@ -36,9 +41,11 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 
 from wildfire.audit.common import assert_readonly, load_config, write_manifest
+from wildfire.paper.channels import CHANNELS, has_fire, masked_std, summary_columns
+from wildfire.paper.channels import tag as channel_tag
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
 from wildfire.paper.prepare import FIRE_CH
-from wildfire.paper.reconstruct import UNet3D, cache_norm
+from wildfire.paper.reconstruct import UNet3D, as_float, cache_norm, gather_windows, to_device_once
 
 DTS = (1, 7, 15, 30)
 T = 30
@@ -138,9 +145,9 @@ class UNet3DMulti(UNet3D):
 
 
 def pair_batch(X, rows, ks, L, mean, std, device):
-    """Fenster je (Stichprobe, dt) einsammeln -> (B, 55, 30, 13, 13)."""
-    xb = np.stack([X[r, window(L, DTS[k])[0]:window(L, DTS[k])[1]] for r, k in zip(rows, ks)])
-    xb = torch.from_numpy(xb).to(device).float().permute(0, 2, 1, 3, 4)
+    """Fenster je (Stichprobe, dt) einsammeln -> (B, 55, 30, 13, 13); X numpy oder GPU-Tensor."""
+    starts = [window(L, DTS[k])[0] for k in ks]
+    xb = as_float(gather_windows(X, rows, starts, T), device).permute(0, 2, 1, 3, 4)
     m = torch.from_numpy(mean).to(device)[None, :, None, None, None]
     s = torch.from_numpy(std).to(device)[None, :, None, None, None]
     return (xb - m) / s
@@ -198,8 +205,15 @@ def main() -> None:
     ap.add_argument("--config", required=True)
     ap.add_argument("--cache", required=True)
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    ap.add_argument("--test-label", choices=["paper", "centre"], default="paper")
     ap.add_argument("--methods", nargs="+",
                     default=["persistence", "unet3d_dt", "hgb_dt", "mlp_dt", "mlp_multi", "unet3d_multi"])
+    ap.add_argument("--channels", choices=list(CHANNELS), default="paper55",
+                    help="Eingabekanaele; Labels bleiben die des Caches")
+    ap.add_argument("--unet-run", default="_paperdt",
+                    help="Lauf von 42_paper_reconstruct, dessen Vorhersagen unet3d_dt liest "
+                         "(Datei rec_<cache>_cache<unet-run><Kanal-Tag>.npz)")
+    ap.add_argument("--tag", default="", help="Zusatz am Manifestnamen")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
@@ -215,6 +229,10 @@ def main() -> None:
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     print(f"[cmp] {args.cache}: X {X.shape} in {time.time() - t_load:.0f} s auf {device}")
     mean, std, _ = cache_norm(Path(cfg["dataset_root"]) / args.cache / "norm_stats.npz")
+    std = masked_std(std, args.channels)                      # gestrichene Kanaele -> Eingabe 0
+    cols = summary_columns(args.channels)
+    ctag = channel_tag(args.channels)
+    print(f"[cmp] Kanalsatz {args.channels}: {len(CHANNELS[args.channels])} Kanaele", flush=True)
 
     res: dict = {}
 
@@ -226,15 +244,20 @@ def main() -> None:
             f"{k} {agg[k]['mean']:.3f}" for k in ("f1", "pr_auc", "roc_auc", "ece", "brier")), flush=True)
 
     yt = y[idx["test"]]
+    if args.test_label == "centre":
+        yt = (X[idx["test"], -1, FIRE_CH, CENTRE, CENTRE] > 0).astype(int)
+        print(f"[cmp] Mittelzellen-Label auf dem Test: {yt.sum()} positiv von {yt.size}", flush=True)
     # Zusammenfassungen je dt, standardisiert mit TRAIN
     feats = {}
     for dt_ in DTS:
         t0, t1 = window(L, dt_)
-        F_ = {s: summaries(X, idx[s], t0, t1) for s in idx}
+        F_ = {s: summaries(X, idx[s], t0, t1)[:, cols] for s in idx}
         m_, s_ = F_["train"].mean(0), F_["train"].std(0) + 1e-6
         feats[dt_] = {s: ((F_[s] - m_) / s_).astype(np.float32) for s in idx}
 
-    if "persistence" in args.methods:
+    if "persistence" in args.methods and not has_fire(args.channels):
+        print("[cmp] persistence uebersprungen: sie besteht nur aus der Feuermaske", flush=True)
+    elif "persistence" in args.methods:
         for dt_ in DTS:
             t0, t1 = window(L, dt_)
             ff = {s: fire_fraction(X, idx[s], t0, t1) for s in ("train", "test")}
@@ -242,13 +265,16 @@ def main() -> None:
             record("persistence", dt_, [paper_metrics(pl.predict_proba(ff["test"][:, None])[:, 1], yt)])
 
     if "unet3d_dt" in args.methods:
-        z_path = exp / "predictions" / "paper" / f"rec_{args.cache}_cache_paperdt.npz"
+        z_path = exp / "predictions" / "paper" / f"rec_{args.cache}_cache{args.unet_run}{ctag}.npz"
         if z_path.exists():
             z = np.load(z_path)
             pos = {int(i): n for n, i in enumerate(z["idx_test"])}
             sel = np.array([pos[int(i)] for i in idx["test"]])
             for dt_ in DTS:
-                ks = [k for k in z.files if k.startswith(f"paper55_T30_end{dt_ + 1}_s") and k.endswith("_test")]
+                ks = [k for k in z.files
+                      if k.startswith(f"{args.channels}_T30_end{dt_ + 1}_s") and k.endswith("_test")]
+                if not ks:
+                    raise SystemExit(f"ABBRUCH: {z_path} hat keine Vorhersagen {args.channels}_T30_end{dt_ + 1}")
                 record("unet3d_dt", dt_, [paper_metrics(z[k][sel], yt) for k in sorted(ks)])
         else:
             print(f"[cmp] WARNUNG: {z_path} fehlt - unet3d_dt uebersprungen")
@@ -292,12 +318,14 @@ def main() -> None:
 
     if "unet3d_multi" in args.methods:
         per = {dt_: [] for dt_ in DTS}
+        Xg = to_device_once(X, device)
         for seed in args.seeds:
             print(f"    unet3d_multi seed {seed}", flush=True)
-            net = fit_unet_multi(X, y, idx["train"], idx["val"], L, mean, std, device, seed)
+            net = fit_unet_multi(Xg, y, idx["train"], idx["val"], L, mean, std, device, seed)
             for k, dt_ in enumerate(DTS):
                 per[dt_].append(paper_metrics(
-                    unet_multi_predict(net, X, idx["test"], k, L, mean, std, device), yt))
+                    unet_multi_predict(net, Xg, idx["test"], k, L, mean, std, device), yt))
+        del Xg
         for dt_ in DTS:
             record("unet3d_multi", dt_, per[dt_])
 
@@ -308,9 +336,12 @@ def main() -> None:
                 a = res[mth][str(dt_)]["summary"]
                 print(f"    dt={dt_:2d} {mth:13s} " + "  ".join(f"{a[k]['mean']:.3f}" for k in KEYS))
 
-    write_manifest(cfg, f"p5_compare_{args.cache}", args.config, {
+    name = f"p5_compare_{args.cache}" + ("_centre" if args.test_label == "centre" else "") + ctag + args.tag
+    write_manifest(cfg, name, args.config, {
+        "test_label": args.test_label,
         "cache": args.cache, "dts": list(DTS), "T": T, "seeds": args.seeds,
-        "labels": "Cache-Labels (Paper-GT)", "channels": "alle 55, ohne Sperre",
+        "labels": "Cache-Labels (Paper-GT)", "channels": args.channels,
+        "channel_list": CHANNELS[args.channels], "unet3d_dt_from": f"rec_{args.cache}_cache{args.unet_run}{ctag}.npz",
         "metric_assumptions": ASSUMPTIONS, "results": res,
     })
 

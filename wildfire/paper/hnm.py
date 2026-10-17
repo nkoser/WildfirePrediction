@@ -39,11 +39,16 @@ CACHES = ("cache_A", "cache_G", "cache_H", "cache_Y")
 Q = (5, 10, 25, 50, 75, 90, 95)
 
 
-def calibrate(X: np.ndarray, fire: np.ndarray):
-    """P99, d_i und Gewichte w_i laut Paper aus Rohwerten X (n, 6) und Feuer (n,)."""
+def calibrate(X: np.ndarray, fire: np.ndarray, clip: bool = True):
+    """P99, d_i und Gewichte w_i aus Rohwerten X (n, 6) und Feuer (n,).
+
+    clip=True: d_i auf x~ = min(x / P99, 1) (unsere erste Lesart).
+    clip=False: d_i auf den Komponentenwerten selbst (so beschreibt es das Paper);
+    eine lineare Skalierung aendert d_i nicht, nur die Kappung bei P99.
+    """
     p99 = np.percentile(X, 99, axis=0)
     p99 = np.where(p99 > 0, p99, 1.0)
-    Xn = np.minimum(X / p99, 1.0)
+    Xn = np.minimum(X / p99, 1.0) if clip else X
     sd_n = Xn[~fire].std(0)
     d = np.maximum(0.0, (Xn[fire].mean(0) - Xn[~fire].mean(0)) / np.where(sd_n > 0, sd_n, 1.0))
     w = d / d.sum() if d.sum() > 0 else np.full(X.shape[1], 1 / X.shape[1])
@@ -109,8 +114,9 @@ def main() -> None:
     }
     weights_by = {}
     for name, (sel, fire_v) in variants.items():
-        p99_v, d_v, w_v = calibrate(X_all[sel], fire_v[sel])
-        weights_by[name] = {"p99": p99_v.tolist(), "d": d_v.tolist(), "w": w_v.tolist()}
+        for clip, sfx in ((True, ""), (False, "/unclipped")):
+            p99_v, d_v, w_v = calibrate(X_all[sel], fire_v[sel], clip=clip)
+            weights_by[name + sfx] = {"p99": p99_v.tolist(), "d": d_v.tolist(), "w": w_v.tolist()}
 
     # Standard fuer die Messung an den Caches: valid/pixel
     X, fire = X_all[is_valid], fire_px[is_valid]
@@ -138,8 +144,9 @@ def main() -> None:
         split = np.load(dd / "split.npy")
         raw = np.asarray(Xc[:, -1, 19:25, 6, 6]).astype(np.float64)
         tr = split == "train"
-        p_c, d_c, w_c = calibrate(raw[tr], y[tr] == 1)
-        weights_by[f"cache_train/{cache}"] = {"p99": p_c.tolist(), "d": d_c.tolist(), "w": w_c.tolist()}
+        for clip, sfx in ((True, ""), (False, "/unclipped")):
+            p_c, d_c, w_c = calibrate(raw[tr], y[tr] == 1, clip=clip)
+            weights_by[f"cache_train/{cache}{sfx}"] = {"p99": p_c.tolist(), "d": d_c.tolist(), "w": w_c.tolist()}
         sc = score(raw, p99, w)
         out[cache] = {}
         for sp in ("train", "val", "test"):
@@ -161,7 +168,7 @@ def main() -> None:
                      ("cache_A", "cache_G"), ("cache_H", "cache_Y")):
             r = ks_2samp(neg_s[(a, sp)], neg_s[(b, sp)])
             ks[f"{sp}:{a}|{b}"] = {"ks": float(r.statistic), "p": float(r.pvalue)}
-    print("\n[hnm] Gewichte je Lesart von Trainingsset und Feuer (Ziel laut Paper: FFMC 0,152)")
+    print("\n[hnm] Gewichte je Lesart von Trainingsset und Feuer (Ziel laut Paper: FFMC 0,152, DMC 0,184)")
     print("    " + " " * 26 + "  ".join(f"{n:>5s}" for n in NAMES))
     for name, v in weights_by.items():
         print(f"    {name:26s}" + "  ".join(f"{x:5.3f}" for x in v["w"]))
@@ -182,6 +189,7 @@ def main() -> None:
         "pool_median_nofire": med,
         "caches": out, "ks_negatives": ks,
         "weights_by_reading": weights_by, "target_ffmc_weight_paper": 0.152,
+        "target_weights_paper": {"FFMC": 0.152, "DMC": 0.184},
     })
 
 
