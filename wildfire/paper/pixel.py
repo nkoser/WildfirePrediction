@@ -45,6 +45,7 @@ from wildfire.paper.channels import tag as channel_tag
 from wildfire.paper.compare import CENTRE, DTS, KEYS, window
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
 from wildfire.paper.prepare import FIRE_CH
+from wildfire.paper import targets
 from wildfire.paper.reconstruct import UNet3D, cache_norm, loader, to_device_once
 
 P = 13
@@ -148,6 +149,8 @@ def main() -> None:
     ap.add_argument("--cache", default="cache_G")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--methods", nargs="+", default=["persistence_px", "hgb_px", "unet3d_px"])
+    ap.add_argument("--target", choices=targets.TARGETS, default="cache",
+                    help="cache: Feuer an D; next_patch: Feuer an D+1, Fenster einen Tag spaeter (targets.py)")
     ap.add_argument("--channels", choices=list(CHANNELS), default="paper55",
                     help="Eingabekanaele; das Label je Pixel bleibt die Feuermaske an t")
     args = ap.parse_args()
@@ -164,13 +167,13 @@ def main() -> None:
     t_load = time.time()
     d = exp / "derived_data" / "paper" / f"{args.cache}_L61"
     X = np.load(d / "X.npy")                                 # (N, 61, 55, 13, 13)
-    y = np.load(d / "y.npy").astype(int)
+    y = targets.labels(d, args.target)
     split = np.load(d / "split.npy")
-    L = X.shape[1]
+    L = X.shape[1] + targets.shift(args.target)          # effektive Laenge: Zieltag = Index L - 1
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     mean, std, _ = cache_norm(Path(cfg["dataset_root"]) / args.cache / "norm_stats.npz")
 
-    fire_t = X[:, -1, FIRE_CH]                               # (N, 13, 13), Zieltag t
+    fire_t = targets.fire_map(d, X, args.target).astype(np.uint8)   # (N, 13, 13), Zieltag t
     vals = np.unique(fire_t)
     Y = (fire_t > 0).astype(np.int8)
     data_info = {
@@ -231,9 +234,9 @@ def main() -> None:
                 maps.append(unet_px_predict(net, Xg, te, t0, t1, mean, std, device, chs=chs))
             record("unet3d_px", dt_, maps)
 
-    write_manifest(cfg, f"p9_pixel_{args.cache}{channel_tag(args.channels)}", args.config, {
+    write_manifest(cfg, f"p9_pixel_{args.cache}{targets.tag(args.target)}{channel_tag(args.channels)}", args.config, {
         "cache": args.cache, "label": "Feuermaske (Kanal 0) je Pixel am Zieltag t",
-        "channels": args.channels, "channel_list": chs,
+        "target": args.target, "channels": args.channels, "channel_list": chs,
         "protocol": "Fenster [t - dt - 30, t - dt - 1], dt in {1, 7, 15, 30}",
         "evaluations": {"centre": "Mittelzelle gegen ihr Pixel-Label",
                         "pixel": "alle 169 Pixel aller Test-Stichproben",

@@ -6,6 +6,7 @@ Hier entstehen dafuer je Cache, fuer alle Splits:
 
   y_next_patch.npy   Feuer irgendwo im 13x13-Ausschnitt an D+1 (MCD14A1-Rohraster)
   y_next_centre.npy  Feuer in der Mittelzelle an D+1
+  fire_next.npy      (N, 13, 13) Feuermaske des Ausschnitts an D+1 (fuer die Pixel-Modelle)
 
 neben X.npy unter derived_data/paper/<cache>_L61/.
 """
@@ -43,11 +44,18 @@ def main() -> None:
     for c, meta in metas.items():
         d = exp / "derived_data" / "paper" / f"{c}_L61"
         yp, yc = np.zeros(len(meta), np.int8), np.zeros(len(meta), np.int8)
+        fmap = np.zeros((len(meta), 2 * HALF + 1, 2 * HALF + 1), np.uint8)   # Ausschnitt an D+1, Rand = 0
         for i, (m, r, col) in enumerate(meta):
             f = fire[to_date(m) + dt.timedelta(days=1)]
             yp[i], yc[i] = patch(f, r, col).any(), f[r, col]
+            H, W = f.shape
+            r0, c0 = r - HALF, col - HALF
+            rr0, cc0, rr1, cc1 = max(0, r0), max(0, c0), min(H, r0 + 2 * HALF + 1), min(W, c0 + 2 * HALF + 1)
+            fmap[i, rr0 - r0:rr1 - r0, cc0 - c0:cc1 - c0] = f[rr0:rr1, cc0:cc1]
+        assert (fmap.reshape(len(meta), -1).max(1) == yp).all() and (fmap[:, HALF, HALF] == yc).all()
         np.save(d / "y_next_patch.npy", yp)
         np.save(d / "y_next_centre.npy", yc)
+        np.save(d / "fire_next.npy", fmap)
         y = np.load(d / "y.npy").astype(int)
         split = np.load(d / "split.npy")
         info[c] = {s: {"n": int((split == s).sum()),

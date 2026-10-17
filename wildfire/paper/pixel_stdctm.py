@@ -54,6 +54,7 @@ from wildfire.paper.pixel import map_metrics
 from wildfire.paper.prepare import FIRE_CH
 from wildfire.paper.channels import CHANNELS, masked_std
 from wildfire.paper.channels import tag as channel_tag
+from wildfire.paper import targets
 from wildfire.paper.reconstruct import cache_norm, gather_windows, to_device_once
 from wildfire.paper.stdctm import CrossBlock
 
@@ -152,10 +153,12 @@ def main() -> None:
                     help="Modellauswahl: Val-NLL je Pixel oder mittlere Val-PR-AUC (Mittelzelle, Ausschnitt) im dt-Protokoll")
     ap.add_argument("--init-from", default="", help="Checkpoint zum Nachtrainieren; {seed} wird ersetzt")
     ap.add_argument("--save-ckpt", action="store_true")
+    ap.add_argument("--target", choices=targets.TARGETS, default="cache",
+                    help="cache: Feuer an D; next_patch: Feuer an D+1, Fenster einen Tag spaeter (targets.py)")
     ap.add_argument("--channels", choices=list(CHANNELS), default="paper55",
                     help="Eingabekanaele; gestrichene gehen als 0 ins Netz, Ereignisse bleiben die Feuermaske")
     args = ap.parse_args()
-    args.tag = channel_tag(args.channels) + args.tag          # Manifest- und Checkpoint-Namen
+    args.tag = targets.tag(args.target) + channel_tag(args.channels) + args.tag          # Manifest- und Checkpoint-Namen
     cfg = load_config(args.config)
     assert_readonly(cfg)
     exp = Path(cfg["experiment_root"])
@@ -164,9 +167,9 @@ def main() -> None:
     t_load = time.time()
     d = exp / "derived_data" / "paper" / f"{args.cache}_L61"
     X = np.load(d / "X.npy")                                 # (N, 61, 55, 13, 13)
-    y = np.load(d / "y.npy").astype(int)
+    y = targets.labels(d, args.target)
     split = np.load(d / "split.npy")
-    L = X.shape[1]
+    L = X.shape[1] + targets.shift(args.target)          # effektive Laenge: Zieltag = Index L - 1
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     mean, std, _ = cache_norm(Path(cfg["dataset_root"]) / args.cache / "norm_stats.npz")
     std = masked_std(std, args.channels)
@@ -174,6 +177,8 @@ def main() -> None:
     m_t = torch.from_numpy(mean).float().to(device)[None, None, :, None, None]
     s_t = torch.from_numpy(std).float().to(device)[None, None, :, None, None]
     fire = X[:, :, FIRE_CH] > 0                              # (N, 61, 13, 13)
+    if targets.shift(args.target):                           # Folgetag D+1 als Tag L - 1 anhaengen
+        fire = np.concatenate([fire, targets.fire_map(d, X, args.target)[:, None]], 1)
     Y = fire[:, -1].astype(np.int8)                          # Label je Pixel am Zieltag
     E_LO, E_HI = T_WIN - 1, L - 2                            # moegliche Stichtage
     tau_max = float(L - 1 - E_LO)                            # 31 Tage
@@ -319,7 +324,7 @@ def main() -> None:
 
     write_manifest(cfg, f"p10_pixel_stdctm_{args.cache}{args.tag}", args.config, {
         "cache": args.cache, "train_source": args.train_source,
-        "channels": args.channels, "channel_list": CHANNELS[args.channels],
+        "target": args.target, "channels": args.channels, "channel_list": CHANNELS[args.channels],
         "target": "je Pixel: erster Tag nach dem Stichtag mit Feuermaske 1 (Cache-Kanal 0 bzw. MCD14A1), zensiert "
                   "am Zieltag (cache) bzw. nach 100 Tagen (cube)",
         "landmarks": (f"Stichtag e in {E_LO}..{E_HI} (Cache-Index), {args.landmarks_per_epoch} je Stichprobe und Epoche"

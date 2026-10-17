@@ -45,6 +45,7 @@ from wildfire.paper.channels import CHANNELS, has_fire, masked_std, summary_colu
 from wildfire.paper.channels import tag as channel_tag
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
 from wildfire.paper.prepare import FIRE_CH
+from wildfire.paper import targets
 from wildfire.paper.reconstruct import UNet3D, as_float, cache_norm, gather_windows, to_device_once
 
 DTS = (1, 7, 15, 30)
@@ -214,6 +215,8 @@ def main() -> None:
                     help="Lauf von 42_paper_reconstruct, dessen Vorhersagen unet3d_dt liest "
                          "(Datei rec_<cache>_cache<unet-run><Kanal-Tag>.npz)")
     ap.add_argument("--tag", default="", help="Zusatz am Manifestnamen")
+    ap.add_argument("--target", choices=targets.TARGETS, default="cache",
+                    help="cache: Feuer an D; next_patch: Feuer an D+1, Fenster einen Tag spaeter (targets.py)")
     args = ap.parse_args()
     cfg = load_config(args.config)
     assert_readonly(cfg)
@@ -223,9 +226,9 @@ def main() -> None:
     t_load = time.time()
     d = exp / "derived_data" / "paper" / f"{args.cache}_L61"
     X = np.load(d / "X.npy")                                 # (N, 61, 55, 13, 13)
-    y = np.load(d / "y.npy").astype(int)
+    y = targets.labels(d, args.target)
     split = np.load(d / "split.npy")
-    L = X.shape[1]
+    L = X.shape[1] + targets.shift(args.target)          # effektive Laenge: Zieltag = Index L - 1
     idx = {s: np.where(split == s)[0] for s in ("train", "val", "test")}
     print(f"[cmp] {args.cache}: X {X.shape} in {time.time() - t_load:.0f} s auf {device}")
     mean, std, _ = cache_norm(Path(cfg["dataset_root"]) / args.cache / "norm_stats.npz")
@@ -245,7 +248,7 @@ def main() -> None:
 
     yt = y[idx["test"]]
     if args.test_label == "centre":
-        yt = (X[idx["test"], -1, FIRE_CH, CENTRE, CENTRE] > 0).astype(int)
+        yt = targets.centre_labels(d, X, args.target)[idx["test"]]
         print(f"[cmp] Mittelzellen-Label auf dem Test: {yt.sum()} positiv von {yt.size}", flush=True)
     # Zusammenfassungen je dt, standardisiert mit TRAIN
     feats = {}
@@ -272,9 +275,9 @@ def main() -> None:
             sel = np.array([pos[int(i)] for i in idx["test"]])
             for dt_ in DTS:
                 ks = [k for k in z.files
-                      if k.startswith(f"{args.channels}_T30_end{dt_ + 1}_s") and k.endswith("_test")]
+                      if k.startswith(f"{args.channels}_T30_end{dt_ + 1 - targets.shift(args.target)}_s") and k.endswith("_test")]
                 if not ks:
-                    raise SystemExit(f"ABBRUCH: {z_path} hat keine Vorhersagen {args.channels}_T30_end{dt_ + 1}")
+                    raise SystemExit(f"ABBRUCH: {z_path} hat keine Vorhersagen {args.channels}_T30_end{dt_ + 1 - targets.shift(args.target)}")
                 record("unet3d_dt", dt_, [paper_metrics(z[k][sel], yt) for k in sorted(ks)])
         else:
             print(f"[cmp] WARNUNG: {z_path} fehlt - unet3d_dt uebersprungen")
@@ -336,9 +339,9 @@ def main() -> None:
                 a = res[mth][str(dt_)]["summary"]
                 print(f"    dt={dt_:2d} {mth:13s} " + "  ".join(f"{a[k]['mean']:.3f}" for k in KEYS))
 
-    name = f"p5_compare_{args.cache}" + ("_centre" if args.test_label == "centre" else "") + ctag + args.tag
+    name = f"p5_compare_{args.cache}" + ("_centre" if args.test_label == "centre" else "") + targets.tag(args.target) + ctag + args.tag
     write_manifest(cfg, name, args.config, {
-        "test_label": args.test_label,
+        "test_label": args.test_label, "target": args.target,
         "cache": args.cache, "dts": list(DTS), "T": T, "seeds": args.seeds,
         "labels": "Cache-Labels (Paper-GT)", "channels": args.channels,
         "channel_list": CHANNELS[args.channels], "unet3d_dt_from": f"rec_{args.cache}_cache{args.unet_run}{ctag}.npz",

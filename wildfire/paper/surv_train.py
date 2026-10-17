@@ -47,6 +47,7 @@ from wildfire.paper.channels import tag as channel_tag
 from wildfire.paper.metrics import paper_metrics
 from wildfire.paper.compare import MLP
 from wildfire.paper.prepare import FIRE_CH
+from wildfire.paper import targets
 from wildfire.paper.reconstruct import as_float, cache_norm, to_device_once
 from wildfire.paper.stdctm import CrossBlock, DayEncoder
 
@@ -186,6 +187,8 @@ def main() -> None:
                     help="zusaetzlich im Verschiebe-Protokoll des Papers auswerten (Variante all)")
     ap.add_argument("--target", choices=["patch", "centre"], default="patch",
                     help="Ereignis: erstes Feuer irgendwo im Ausschnitt oder nur an der Mittelzelle")
+    ap.add_argument("--paper-target", choices=targets.TARGETS, default="cache",
+                    help="Ziel der Paper-Auswertung: Feuer an D oder an D+1 (Fenster einen Tag spaeter)")
     ap.add_argument("--channels", choices=list(CHANNELS), default="paper55",
                     help="Eingabekanaele; Ereignisse kommen weiter aus der Feuermaske")
     args = ap.parse_args()
@@ -224,12 +227,12 @@ def main() -> None:
     if args.paper_eval:
         pdir = exp / "derived_data" / "paper" / f"{args.cache}_L61"
         sp = np.load(pdir / "split.npy")
-        paper = {"X": np.load(pdir / "X.npy", mmap_mode="r"), "y": np.load(pdir / "y.npy").astype(int),
+        paper = {"X": np.load(pdir / "X.npy", mmap_mode="r"), "y": targets.labels(pdir, args.paper_target),
                  "idx": {s: np.where(sp == s)[0] for s in ("val", "test")}}
-        paper["L"] = paper["X"].shape[1]
+        paper["L"] = paper["X"].shape[1] + targets.shift(args.paper_target)   # Zieltag = Index L - 1
         # Mittelzellen-Label: Feuermaske an t in der Mittelzelle (Positive mit Feuer nur
         # bei Nachbarn zaehlen hier als 0). Auf val identisch mit dem Paper-Label.
-        paper["yc"] = (np.asarray(paper["X"][paper["idx"]["test"], -1, FIRE_CH, 6, 6]) > 0).astype(int)
+        paper["yc"] = targets.centre_labels(pdir, paper["X"], args.paper_target)[paper["idx"]["test"]]
 
     def pwin(rows, dt_):
         t1 = paper["L"] - dt_ - 1
@@ -361,10 +364,10 @@ def main() -> None:
                 paper_record("st_dctm", pc)
             del XG
 
-    name = f"p8_surv_{args.cache}" + ("_centre" if args.target == "centre" else "") + channel_tag(args.channels)
+    name = f"p8_surv_{args.cache}" + ("_centre" if args.target == "centre" else "") + targets.tag(args.paper_target) + channel_tag(args.channels)
     write_manifest(cfg, name, args.config, {
         "cache": args.cache, "target": args.target, "follow_up_days": H, "horizons": list(HZ), "seeds": args.seeds,
-        "channels": args.channels, "channel_list": CHANNELS[args.channels],
+        "paper_target": args.paper_target, "channels": args.channels, "channel_list": CHANNELS[args.channels],
         "dctm_head": "Bernstein Grad 12 auf [0,100], monoton, S(0)=1, intervallzensierte Likelihood",
         "note": "Stichtage an Paper-Stichproben gebunden (1/3 Feuertage); Ereignisrate weit ueber der echten",
         "results": res,
