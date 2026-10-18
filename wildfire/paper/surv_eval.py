@@ -206,6 +206,12 @@ def calib_fit(h: np.ndarray, event: np.ndarray, t: np.ndarray) -> tuple[float, f
     return float(r.x[0]), float(np.exp(r.x[1]))
 
 
+def ensemble(hs: list[np.ndarray]) -> np.ndarray:
+    """Mittel der Survival-Kurven mehrerer Modelle -> diskrete Hazards."""
+    S = np.mean([np.exp(-_cum_hazard(h)) for h in hs], axis=0)
+    prev = np.concatenate([np.ones((S.shape[0], 1)), S[:, :-1]], 1)
+    return np.clip(1 - S / np.maximum(prev, 1e-300), 1e-15, 1 - 1e-7)
+
 def compact(m: dict) -> dict:
     out = {"nll": m["nll"], "ibs": m["integrated_brier"], "c_index": m["concordance_index"],
            "n": m["n"], "n_events": m["n_events"]}
@@ -279,19 +285,30 @@ def main() -> None:
             print(f"[seval] {spec}: keine Checkpoints", flush=True)
             continue
         fn = hazards_pxst if kind == "pxst" else hazards_sts
+        ens = {"test": {"centre": [], "patch": []}, "val": {"centre": [], "patch": []}}
+
+        def with_cal(name, sname, tg, hv, ht):
+            record(name, sname, tg, ht)
+            if args.calibrate:
+                a, b = calib_fit(hv, *vt[tg])
+                calib.setdefault(f"{name}_cal", {}).setdefault(tg, {})[sname] = {"a": a, "b": b}
+                record(f"{name}_cal", sname, tg, calib_apply(ht, a, b))
+
         for f in files:
             t0 = time.time()
             hc, hp = fn(f, Xg, ev["doy"], mean, std, device)
+            hvc, hvp = fn(f, Xv, va["doy"], mean, std, device) if args.calibrate else (None, None)
             sname = Path(f).stem.split("_")[-1]
-            record(kind, sname, "centre", hc)
-            record(kind, sname, "patch", hp)
-            if args.calibrate:
-                hvc, hvp = fn(f, Xv, va["doy"], mean, std, device)
-                for tg, hv, ht in (("centre", hvc, hc), ("patch", hvp, hp)):
-                    a, b = calib_fit(hv, *vt[tg])
-                    calib.setdefault(f"{kind}_cal", {}).setdefault(tg, {})[sname] = {"a": a, "b": b}
-                    record(f"{kind}_cal", sname, tg, calib_apply(ht, a, b))
+            for tg, hv, ht in (("centre", hvc, hc), ("patch", hvp, hp)):
+                with_cal(kind, sname, tg, hv, ht)
+                ens["test"][tg].append(ht)
+                if args.calibrate:
+                    ens["val"][tg].append(hv)
             print(f"    {Path(f).name} in {time.time() - t0:.0f} s", flush=True)
+        if len(files) > 1:                                   # Ensemble: Mittel der Survival-Kurven
+            for tg in ("centre", "patch"):
+                with_cal(f"{kind}_ens", "ens", tg, ensemble(ens["val"][tg]) if args.calibrate else None,
+                         ensemble(ens["test"][tg]))
 
     summary = {m: {tg: {k: {"mean": float(np.mean([s[k] for s in seeds.values()])),
                              "std": float(np.std([s[k] for s in seeds.values()]))}
