@@ -175,6 +175,12 @@ def main() -> None:
     ap.add_argument("--dropout", type=float, default=0.1)
     ap.add_argument("--patch-weight", type=float, default=1.0)
     ap.add_argument("--limit-eval", type=int, default=0, help="nur fuer Rauchtests: so viele Val/Test-Stichproben")
+    ap.add_argument("--cube-kind", choices=["all", "random", "fire"], default="all",
+                    help="Wuerfel-Stichtage: alle, nur zufaellige (echte Haeufigkeit) oder nur an Feuer verankerte")
+    ap.add_argument("--select", choices=["prauc", "survnll"], default="prauc",
+                    help="Modellauswahl: PR-AUC auf den Paper-Val-Stichproben oder Survival-NLL auf "
+                         "zufaelligen Val-Stichtagen (surv_eval, 2020-2022)")
+    ap.add_argument("--surv-dir", default="surv_eval_test")
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -223,11 +229,15 @@ def main() -> None:
     if args.train_source == "cube":
         cdir = exp / "derived_data" / args.cube_dir
         t1 = time.time()
-        Xc = np.load(cdir / "train_X.npy")                       # (n, 30, 55, 13, 13), in den RAM
-        evc, tc = np.load(cdir / "train_event.npy"), np.load(cdir / "train_t.npy").astype(np.int64)
+        kind_c = np.load(cdir / "train_meta.npz")["kind"]           # 0 an Feuer verankert, 1 zufaellig
+        keep = (np.ones(kind_c.size, bool) if args.cube_kind == "all"
+                else kind_c == (1 if args.cube_kind == "random" else 0))
+        rows_c = np.where(keep)[0]
+        Xc = np.asarray(np.load(cdir / "train_X.npy", mmap_mode="r")[rows_c])   # (n, 30, 55, 13, 13), in den RAM
+        evc, tc = np.load(cdir / "train_event.npy")[rows_c], np.load(cdir / "train_t.npy")[rows_c].astype(np.int64)
         dates = CubeReader(exp).dates
         doyc = np.array([dt.date.fromisoformat(dates[int(Lc)]).timetuple().tm_yday
-                         for Lc in np.load(cdir / "train_meta.npz")["L"]], np.float32)
+                         for Lc in np.load(cdir / "train_meta.npz")["L"][rows_c]], np.float32)
         init_px, init_pa = float(evc.mean()), float(evc.reshape(len(evc), -1).any(1).mean())
         print(f"[sts] Wuerfel: {Xc.shape[0]:,} Stichtage in {time.time() - t1:.0f} s; Pixel-Ereignisse "
               f"{init_px:.4f}, Ausschnitt {init_pa:.3f}", flush=True)
@@ -253,6 +263,28 @@ def main() -> None:
             maps.append(fp.view(len(r), P, P).cpu().numpy()); heads.append(fa.cpu().numpy())
         return np.clip(np.concatenate(maps), 1e-7, 1 - 1e-7), np.clip(np.concatenate(heads), 1e-7, 1 - 1e-7)
 
+    if args.select == "survnll":
+        sd = exp / "derived_data" / args.surv_dir
+        sv = dict(np.load(sd / "val_meta.npz"))
+        Xsv = to_device_once(np.load(sd / "val_X.npy"), device, "surv_val_X")
+        print(f"[sts] Auswahl ueber Survival-NLL auf {Xsv.shape[0]:,} zufaelligen Val-Stichtagen", flush=True)
+
+    @torch.no_grad()
+    def val_surv(net, bs=128) -> float:
+        """Minus (NLL Mitte + NLL Ausschnitt) auf zufaelligen Val-Stichtagen, Horizont 100 Tage."""
+        net.eval()
+        tot, n = 0.0, Xsv.shape[0]
+        for a in range(0, n, bs):
+            sl = slice(a, a + bs)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                raw_px, raw_pa = net(to_dev(Xsv[sl]), torch.from_numpy(sv["doy"][sl]).to(device))
+            for head, raw, e, t in ((net.px_head, raw_px[:, CENTRE, CENTRE], sv["ev_centre"][sl], sv["t_centre"][sl]),
+                                    (net.pa_head, raw_pa, sv["ev_patch"][sl], sv["t_patch"][sl])):
+                ll = head.log_likelihood(raw, torch.from_numpy(e).to(device),
+                                         torch.from_numpy(t.astype(np.int64)).to(device), TAU_MAX)
+                tot += float(ll.sum())
+        return tot / n
+
     def val_rank(net) -> float:
         va, sc = idx["val"], []
         for dt_ in DTS:
@@ -260,6 +292,8 @@ def main() -> None:
             sc.append(average_precision_score(Y[va, CENTRE, CENTRE], m[:, CENTRE, CENTRE]))
             sc.append(average_precision_score(y[va], h))
         return float(np.mean(sc))
+
+    val_fn = val_surv if args.select == "survnll" else val_rank
 
     # ---- Training je Seed
     te = idx["test"]
@@ -280,9 +314,9 @@ def main() -> None:
         sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup))
         best, state, bad, hist = -np.inf, None, 0, []
         if args.init_from:
-            best = val_rank(net)
+            best = val_fn(net)
             state = {k: v.detach().clone() for k, v in net.state_dict().items()}
-            print(f"      Start: val PR-AUC (Mittel) {best:.4f}", flush=True)
+            print(f"      Start: val {args.select} {best:.4f}", flush=True)
         print(f"[sts] Seed {seed}: {n_par / 1e6:.2f} Mio. Parameter", flush=True)
         for ep in range(args.epochs):
             net.train()
@@ -314,9 +348,9 @@ def main() -> None:
                 nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                 opt.step(); sched.step()
                 tl += loss.item() * len(r); tn += len(r)
-            vr = val_rank(net)
+            vr = val_fn(net)
             hist.append({"epoch": ep, "train_nll": tl / tn, "val_prauc_mean": vr})
-            print(f"      Epoche {ep:2d}: train NLL {tl / tn:.5f}  val PR-AUC (Mittel Mitte/Ausschnitt) {vr:.4f}  "
+            print(f"      Epoche {ep:2d}: train NLL {tl / tn:.5f}  val {args.select} {vr:.4f}  "
                   f"({time.time() - t_ep:.0f} s)", flush=True)
             if vr > best + 1e-5:
                 best, bad, state = vr, 0, {k: v.detach().clone() for k, v in net.state_dict().items()}
@@ -355,7 +389,7 @@ def main() -> None:
         "model": {"d": args.d, "depth": args.depth, "heads": args.heads, "dropout": args.dropout,
                   "dctm": f"Bernstein Grad {DEGREE} auf [0, {TAU_MAX:.0f}]", "patch_weight": args.patch_weight},
         "training": {"bs": args.bs, "lr": args.lr, "wd": args.wd, "warmup": args.warmup, "epochs": args.epochs,
-                     "steps_per_epoch": args.steps_per_epoch, "patience": args.patience, "selection": "val PR-AUC"},
+                     "steps_per_epoch": args.steps_per_epoch, "patience": args.patience, "selection": args.select, "cube_kind": args.cube_kind},
         "score": "F(dt + 1) bei Stichtag e = Zieltag - dt - 1",
         "metric_assumptions": ASSUMPTIONS, "histories": hists, "results": res,
     })

@@ -39,7 +39,9 @@ from rasterio.io import MemoryFile
 
 from wildfire.audit.common import assert_readonly, load_config, write_manifest
 from wildfire.data.dataset import CubeReader
-from wildfire.eval.metrics import evaluate
+from scipy.optimize import minimize
+
+from wildfire.eval.metrics import evaluate, negative_log_likelihood
 from wildfire.paper.pixel_landmarks import pixel_events
 from wildfire.paper.pixel_stdctm import PixelSTDCTM
 from wildfire.paper.reconstruct import cache_norm, to_device_once
@@ -106,8 +108,7 @@ def sample(cube, land, rng, years, n, last_raw):
     return lr_[pick], lc_[pick], ok_L[rng.integers(0, ok_L.size, size=n)]
 
 
-def build(args, cfg, exp):
-    rng = np.random.default_rng(int(cfg["seed"]) + 31)
+def build(args, cfg, exp, parts):
     cube = CubeReader(exp)
     keys, last_raw = raw_fire_keys(Path(cfg["dataset_root"]))
     land = np.load(exp / "derived_data" / "masks" / "land.npy") & np.load(exp / "derived_data" / "masks" / "canada.npy")
@@ -115,7 +116,11 @@ def build(args, cfg, exp):
     out = exp / "derived_data" / args.out_name
     out.mkdir(parents=True, exist_ok=True)
 
-    for part, years, n, with_x in (("eval", args.years, args.n, True), ("km", args.km_years, args.n_km, False)):
+    spec = {"eval": (args.years, args.n, True, 0), "km": (args.km_years, args.n_km, False, 1),
+            "val": (args.val_years, args.n_val, True, 2)}
+    for part in parts:
+        years, n, with_x, off = spec[part]
+        rng = np.random.default_rng(int(cfg["seed"]) + 31 + 1000 * off)
         yrs = set(range(years[0], years[1] + 1))
         rr, cc, Lc = sample(cube, land, rng, yrs, n, last_raw)
         La = absL(Lc)
@@ -183,6 +188,24 @@ def hazards_sts(ck, X, doy, mean, std, device, bs=64):
     return np.concatenate(hc), np.concatenate(hp)
 
 
+def _cum_hazard(h: np.ndarray) -> np.ndarray:
+    return -np.cumsum(np.log1p(-np.clip(h, 1e-12, 1 - 1e-7)), axis=1)
+
+
+def calib_apply(h: np.ndarray, a: float, b: float) -> np.ndarray:
+    """Lambda'(tau) = e^a * Lambda(tau)^b -> diskrete Hazards; monoton in tau, S(0) = 1."""
+    lam = np.exp(a) * np.power(np.maximum(_cum_hazard(h), 1e-300), b)
+    inc = np.diff(np.concatenate([np.zeros((lam.shape[0], 1)), lam], 1), axis=1)
+    return np.clip(-np.expm1(-inc), 1e-15, 1 - 1e-7)
+
+
+def calib_fit(h: np.ndarray, event: np.ndarray, t: np.ndarray) -> tuple[float, float]:
+    """a, b per Survival-Likelihood; b = e^lb > 0 haelt die Rangfolge je Horizont."""
+    f = lambda p: negative_log_likelihood(calib_apply(h, p[0], float(np.exp(p[1]))), event, t)  # noqa: E731
+    r = minimize(f, x0=np.zeros(2), method="Nelder-Mead", options={"xatol": 1e-4, "fatol": 1e-7, "maxiter": 400})
+    return float(r.x[0]), float(np.exp(r.x[1]))
+
+
 def compact(m: dict) -> dict:
     out = {"nll": m["nll"], "ibs": m["integrated_brier"], "c_index": m["concordance_index"],
            "n": m["n"], "n_events": m["n_events"]}
@@ -199,6 +222,10 @@ def main() -> None:
     ap.add_argument("--km-years", nargs=2, type=int, default=[2000, 2019])
     ap.add_argument("--n", type=int, default=100_000)
     ap.add_argument("--n-km", type=int, default=200_000)
+    ap.add_argument("--val-years", nargs=2, type=int, default=[2020, 2022])
+    ap.add_argument("--n-val", type=int, default=50_000)
+    ap.add_argument("--calibrate", action="store_true",
+                    help="zusaetzlich nachtraeglich kalibrieren: Lambda' = e^a Lambda^b, angepasst auf den Val-Stichtagen")
     ap.add_argument("--out-name", default="surv_eval_test")
     ap.add_argument("--cache-norm", default="cache_G", help="Normierung wie im Training")
     ap.add_argument("--models", nargs="+", default=[
@@ -212,8 +239,9 @@ def main() -> None:
     exp = Path(cfg["experiment_root"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out = exp / "derived_data" / args.out_name
-    if args.build or not (out / "eval_X.npy").exists():
-        build(args, cfg, exp)
+    need = [p for p in ("eval", "km", "val") if args.build or not (out / f"{p}_meta.npz").exists()]
+    if need:
+        build(args, cfg, exp, need)
 
     ev = dict(np.load(out / "eval_meta.npz"))
     km = dict(np.load(out / "km_meta.npz"))
@@ -238,6 +266,12 @@ def main() -> None:
     # ---- neuronale Modelle
     mean, std, _ = cache_norm(Path(cfg["dataset_root"]) / args.cache_norm / "norm_stats.npz")
     Xg = to_device_once(np.load(out / "eval_X.npy"), device, "eval_X")
+    if args.calibrate:
+        va = dict(np.load(out / "val_meta.npz"))
+        Xv = to_device_once(np.load(out / "val_X.npy"), device, "val_X")
+        vt = {"centre": (va["ev_centre"].astype(bool), va["t_centre"].astype(int)),
+              "patch": (va["ev_patch"].astype(bool), va["t_patch"].astype(int))}
+    calib: dict = {}
     for spec in args.models:
         kind, pattern = spec.split(":", 1)
         files = sorted(glob.glob(pattern))
@@ -251,6 +285,12 @@ def main() -> None:
             sname = Path(f).stem.split("_")[-1]
             record(kind, sname, "centre", hc)
             record(kind, sname, "patch", hp)
+            if args.calibrate:
+                hvc, hvp = fn(f, Xv, va["doy"], mean, std, device)
+                for tg, hv, ht in (("centre", hvc, hc), ("patch", hvp, hp)):
+                    a, b = calib_fit(hv, *vt[tg])
+                    calib.setdefault(f"{kind}_cal", {}).setdefault(tg, {})[sname] = {"a": a, "b": b}
+                    record(f"{kind}_cal", sname, tg, calib_apply(ht, a, b))
             print(f"    {Path(f).name} in {time.time() - t0:.0f} s", flush=True)
 
     summary = {m: {tg: {k: {"mean": float(np.mean([s[k] for s in seeds.values()])),
@@ -263,7 +303,9 @@ def main() -> None:
                       "event_rate_100d": {"centre": float(ev["ev_centre"].mean()), "patch": float(ev["ev_patch"].mean())},
                       "fire_in_window": {"centre": float(ev["fire_win_centre"].mean()),
                                          "patch": float(ev["fire_win_patch"].mean())}},
-        "models": args.models, "results": res, "summary": summary,
+        "models": args.models, "results": res, "summary": summary, "calibration": calib,
+        "calibration_rule": "Lambda'(tau) = exp(a) * Lambda(tau)^b, a und b per Survival-Likelihood auf Val-Stichtagen "
+                            f"{args.val_years}; monoton in tau, S(0) = 1, Rangfolge je Horizont unveraendert",
     })
 
 
