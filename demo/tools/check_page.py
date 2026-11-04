@@ -1,4 +1,5 @@
-"""Serve the built site over HTTP on 127.0.0.1 and drive it in headless Chromium at a laptop size.
+"""Serve the built site over HTTP on 127.0.0.1 (or open a deployed copy with --url) and drive it in headless
+Chromium at a laptop size.
 
 Fails on any console error or warning, page error, failed request, or request to another origin, and when
 the page does not behave: it must open on the manifest's default view, load every lead time of the shown
@@ -6,7 +7,7 @@ date (the risk curve then has one point per lead time), switch date, move to the
 select a location on a click. Prints how much the first view and the full date download, and writes
 screenshots of both themes and of the changed state.
 
-    PLAYWRIGHT_BROWSERS_PATH=<browsers> python -I demo/tools/check_page.py demo/dist/site --shots <dir>
+    PLAYWRIGHT_BROWSERS_PATH=<browsers> python -I demo/tools/check_page.py demo/dist/site --shots <dir> [--url <site>]
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import json
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -45,14 +47,20 @@ def main() -> None:
     ap.add_argument("--shots", type=Path, required=True)
     ap.add_argument("--width", type=int, default=1440)
     ap.add_argument("--height", type=int, default=900)
+    ap.add_argument("--url", help="check this deployed copy of the site instead of serving the directory locally")
     args = ap.parse_args()
     args.shots.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((args.site / "data" / "manifest.json").read_text())
     dates = sorted({f["date"] for f in manifest["forecasts"]})
     default = manifest["default"]["date"] if manifest["default"]["date"] in dates else dates[0]
     n_taus = {f["date"]: len(f["taus"]) for f in manifest["forecasts"]}
-    srv = serve(args.site)
-    origin = f"http://127.0.0.1:{srv.server_address[1]}"
+    if args.url:
+        srv, parts = None, urlsplit(args.url)
+        origin, start = f"{parts.scheme}://{parts.netloc}", args.url.rstrip("/") + "/"
+    else:
+        srv = serve(args.site)
+        origin = start = f"http://127.0.0.1:{srv.server_address[1]}"
+        start += "/"
     errors, foreign, failed, problems = [], [], [], []
     loads: list[tuple[str, int]] = []
 
@@ -73,7 +81,7 @@ def main() -> None:
             page.on("requestfailed", lambda r: failed.append(f"{r.url}: {r.failure}"))
             page.on("response", lambda r: loads.append((r.url, int(r.headers.get("content-length", 0)))))
             loads.clear()
-            page.goto(origin + "/")
+            page.goto(start)
             page.wait_for_function("window.__wfReady === true", timeout=60000)
             first_view = (len(loads), sum(b for _, b in loads))
             page.wait_for_function(f"window.__wfComplete === '{default}'", timeout=120000)
@@ -117,7 +125,8 @@ def main() -> None:
             page.screenshot(path=str(args.shots / "changed.png"))
             ctx.close()
         browser.close()
-    srv.shutdown()
+    if srv:
+        srv.shutdown()
     for e in errors:
         print("[check]", e)
     for u in foreign:
