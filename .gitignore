@@ -221,3 +221,13 @@ __marimo__/
 logs/
 slurm-*.out
 slurm-*.err
+
+# Lokale Notizen, Paper-Entwurf und Präsentationen (nicht versioniert)
+.claude/
+/paper_cvpr/
+/paper_notes/
+/reports/
+/research_notes/
+/*.pptx
+/*.pdf
+/*.png
