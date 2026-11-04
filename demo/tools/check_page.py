@@ -120,6 +120,8 @@ def main() -> None:
             page.wait_for_timeout(200)
             expect(page.locator("#curve .hover").get_attribute("visibility") == "visible", "curve hover shows a value")
             page.locator("#curve").screenshot(path=str(args.shots / "curve-hover.png"))
+            page.locator("#vals").scroll_into_view_if_needed()
+            page.locator(".panel").screenshot(path=str(args.shots / "panel-lower.png"))
             page.mouse.move(args.width * 0.35, args.height * 0.45)
             page.wait_for_timeout(600)
             page.screenshot(path=str(args.shots / "changed.png"))

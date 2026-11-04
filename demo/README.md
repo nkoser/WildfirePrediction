@@ -28,7 +28,7 @@ demo/
   grid.json      georeference of the raster (MPCFire grid, EPSG:4326, outer top-left corner)
   tools/         make_placeholder.py, make_basemap.py, export_web.py, build.py, check_page.py, common.py
   web/           template.html, style.css, app.js, basemap.json (Natural Earth 1:50m, generated)
-  vendor/        Leaflet 1.9.4 (BSD-2-Clause), IBM Plex Sans fonts (SIL OFL 1.1), with their licenses
+  vendor/        Leaflet 1.9.4 (BSD-2-Clause), Montserrat and Roboto fonts (SIL OFL 1.1), with their licenses
   dist/          build output, not in git: site/ (the deployable site), artifact/ (a preview fragment)
 ```
 

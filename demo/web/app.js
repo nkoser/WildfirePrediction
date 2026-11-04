@@ -404,7 +404,7 @@
     const selBox = L.rectangle(gridBounds, {
       renderer: renderer('wf-select'), interactive: false, fill: false, weight: 2, opacity: 0,
     }).addTo(map);
-    map.fitBounds(gridBounds, { padding: [24, 24] });
+    map.fitBounds(gridBounds, { padding: [12, 12] });   // at a laptop size this lands on zoom 3, Canada across the map
 
     // ---- reading the map ----------------------------------------------------------------------------
     function cellAt(latlng) {

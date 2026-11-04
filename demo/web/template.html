@@ -1,4 +1,12 @@
 <div class="app" data-manifest="data/manifest.json">
+  <header class="topbar">
+    <div class="brand">
+      <h1 class="brand-title">Wildfire Survival Explorer</h1>
+      <p class="brand-sub">Research demo</p>
+    </div>
+    <!-- the paper's links (paper, arXiv, BibTeX) go here, as a nav, once the paper is public -->
+  </header>
+
   <main class="map-wrap">
     <div id="map" class="map" aria-label="Map of the forecast fire risk. Click a location to see its risk curve."></div>
     <p class="map-title" id="map-title" aria-live="polite"></p>
@@ -14,11 +22,7 @@
   </main>
 
   <aside class="panel" aria-label="Forecast controls and details">
-    <header class="head">
-      <p class="eyebrow">Research demo</p>
-      <h1>Wildfire Survival Explorer</h1>
-      <p class="lede">One forecast gives every pixel a full risk curve: the probability of its first fire within any number of days after the forecast date. The map reads that curve at the lead time you choose.</p>
-    </header>
+    <p class="lede">One forecast gives every pixel a full risk curve: the probability of its first fire within any number of days after the forecast date. The map reads that curve at the lead time you choose.</p>
 
     <p class="note-warn" id="placeholder-note" hidden><span class="chip">Placeholder</span> Risk values in this build are a stand-in computed from past fires, not model output. The fires are real MODIS detections.</p>
     <p class="note-error" id="error-note" hidden></p>

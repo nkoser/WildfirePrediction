@@ -30,19 +30,20 @@ DEMO = Path(__file__).resolve().parents[1]
 TITLE = "Wildfire Survival Explorer"
 DESCRIPTION = ("Interactive wildfire risk forecasts for Canada: for every 5 km pixel, the probability of a "
                "first fire within each lead time, with the fires observed afterwards.")
-# browser-tab icon: a risk curve rising and leveling off, in the map's ramp colors
+# browser-tab icon: a risk curve rising and leveling off, in the map's ramp colors on the page's dark teal
 ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" '
-            'fill="#1a1c1e"/><path d="M6 25C12 25 13 8.5 26 7.5" fill="none" stroke="#fc8d59" stroke-width="3.2" '
+            'fill="#01414e"/><path d="M6 25C12 25 13 8.5 26 7.5" fill="none" stroke="#fc8d59" stroke-width="3.2" '
             'stroke-linecap="round"/><circle cx="26" cy="7.5" r="2.6" fill="#fff7ec"/></svg>')
-LICENSES = {"leaflet-1.9.4-LICENSE.txt": ("leaflet-1.9.4", "LICENSE"), "ibm-plex-OFL.txt": ("fonts", "OFL.txt")}
+LICENSES = {"leaflet-1.9.4-LICENSE.txt": ("leaflet-1.9.4", "LICENSE"),
+            "montserrat-OFL.txt": ("fonts", "montserrat-OFL.txt"), "roboto-OFL.txt": ("fonts", "roboto-OFL.txt")}
 SITE_README = """# Wildfire Survival Explorer
 
 Static files of an interactive map of wildfire risk forecasts. `index.html` is the page, with its scripts,
 fonts and basemap inlined; `data/` holds the forecast manifest and one PNG per map layer. The files are
 generated, so an edit made here is overwritten by the next build.
 
-Third-party software and fonts ship under their own licenses, in `licenses/`: Leaflet (BSD-2-Clause) and
-IBM Plex Sans (SIL Open Font License 1.1). The basemap is from Natural Earth (public domain).
+Third-party software and fonts ship under their own licenses, in `licenses/`: Leaflet (BSD-2-Clause),
+Montserrat and Roboto (SIL Open Font License 1.1). The basemap is from Natural Earth (public domain).
 """
 ALLOWED_URLS = {"https://leafletjs.com", "http://www.w3.org/2000/svg"}
 FORBIDDEN = [r"under (double-blind )?(submission|review)", r"/mnt/", r"/home/", r"/raid/", r"/data/wildfire"]
@@ -51,8 +52,8 @@ PREVIEW_FILE_LIMIT, PREVIEW_PUBLISH_BYTES, PREVIEW_PUBLISH_FILES = 15e6, 64e6, 2
 
 
 def fonts_css() -> str:
-    faces = [("IBM Plex Sans", "100 700", "ibm-plex-sans-latin.woff2"),
-             ("IBM Plex Sans Condensed", "600", "ibm-plex-sans-condensed-600-latin.woff2")]
+    faces = [("Montserrat", "400 700", "montserrat-latin-400-700.woff2"),   # variable: every weight from 400 to 700
+             ("Roboto", "700", "roboto-latin-700.woff2")]
     out = []
     for family, weight, file in faces:
         b64 = base64.b64encode((DEMO / "vendor" / "fonts" / file).read_bytes()).decode("ascii")
