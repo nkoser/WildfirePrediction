@@ -35,6 +35,11 @@ an der Monotonie nichts.
 haben kann. M = 12 gibt bei 13 Ausgabewerten je Pixel Reserve fuer Anstieg,
 Sommergipfel und Herbstabfall innerhalb von H = 100 Tagen.
 
+**Link.** Standard ist die logistische Verteilung (Proportional Odds bei
+reinem Shift-Term). Mit ``link="cloglog"`` (Minimum-Extremwert) gilt
+S = exp(-(e^h(tau) - e^h(0))); ein additiver Shift ist dann Proportional
+Hazards, das lineare Modell also das Cox-Modell mit glatter Basis.
+
 **Likelihood.** Die Ereigniszeiten sind tagesaufgeloest. Ein Ereignis "an
 Tag k" heisst also nicht T = k, sondern T in (k-1, k] - das ist
 Intervallzensierung, und die exakte Likelihood ist S(k-1) - S(k). Gerechnet
@@ -90,15 +95,22 @@ class BernsteinSurvivalHead(nn.Module):
     """
 
     def __init__(self, degree: int = 12, tau_max: float = 365.0,
-                 init_offset: float = -12.0, init_cif: float = INIT_CIF_H) -> None:
+                 init_offset: float = -12.0, init_cif: float = INIT_CIF_H, link: str = "logistic") -> None:
         super().__init__()
+        if link not in ("logistic", "cloglog"):
+            raise ValueError(f"link {link!r}")
         self.degree = degree
         self.tau_max = float(tau_max)
         self.n_out = degree + 1
         self.init_offset = float(init_offset)
-        g0 = 1.0 / (1.0 + math.exp(-self.init_offset))
-        g_end = g0 + init_cif * (1.0 - g0)
-        step = (math.log(g_end / (1.0 - g_end)) - self.init_offset) / degree
+        self.link = link
+        if link == "logistic":
+            g0 = 1.0 / (1.0 + math.exp(-self.init_offset))
+            g_end = g0 + init_cif * (1.0 - g0)
+            theta_end = math.log(g_end / (1.0 - g_end))
+        else:                                               # Lambda(H) = e^theta_M - e^theta_0 = -log(1 - init_cif)
+            theta_end = math.log(-math.log1p(-init_cif) + math.exp(self.init_offset))
+        step = (theta_end - self.init_offset) / degree
         self.step_offset = math.log(math.expm1(step))      # softplus^-1(step)
 
     def thetas(self, raw: torch.Tensor) -> torch.Tensor:
@@ -119,6 +131,11 @@ class BernsteinSurvivalHead(nn.Module):
         B = bernstein_basis(tau / self.tau_max, self.degree)    # (N, T, M+1)
         h = (B * theta.unsqueeze(1)).sum(-1)                # (N, T)
         # h(0) = theta_0, weil B_0(0) = 1 und alle anderen 0
+        if self.link == "cloglog":
+            # F_Z = 1 - exp(-e^z): kumulativer Hazard Lambda = e^h(tau) - e^h(0). Mit einem
+            # additiven Term x'beta in h ist das genau das Cox-Modell, Hazard Ratio e^beta.
+            t0 = theta[:, :1]
+            return -torch.exp(t0) * torch.expm1(h - t0)
         return F.logsigmoid(-h) - F.logsigmoid(-theta[:, :1])
 
     def cif(self, raw: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:

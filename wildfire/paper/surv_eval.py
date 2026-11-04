@@ -42,10 +42,11 @@ from wildfire.data.dataset import CubeReader
 from scipy.optimize import minimize
 
 from wildfire.eval.metrics import evaluate, negative_log_likelihood
+from wildfire.models.surv_heads import BinaryHorizonHead
 from wildfire.paper.pixel_landmarks import pixel_events
 from wildfire.paper.pixel_stdctm import PixelSTDCTM
 from wildfire.paper.reconstruct import cache_norm, to_device_once
-from wildfire.paper.sts_dctm import STSDCTM
+from wildfire.paper.sts_dctm import load_sts
 from wildfire.paper.surv_prepare import DAY_BITS, HALF, T_WIN, window
 from wildfire.paper.surv_train import km_hazard
 
@@ -170,21 +171,33 @@ def hazards_pxst(ck, X, doy, mean, std, device, bs=128):
     return np.concatenate(hc), np.concatenate(hp)
 
 
+VIOLATIONS: dict = {}       # bce-Kopf: Anteil Stichtage mit nicht monotonem F an den Horizonten, je Checkpoint
+
+
 @torch.no_grad()
 def hazards_sts(ck, X, doy, mean, std, device, bs=64):
-    c = torch.load(ck, map_location="cpu")
-    a_ = c.get("args", {})
-    net = STSDCTM(d=a_.get("d", 96), heads=a_.get("heads", 4), depth=a_.get("depth", 4)).to(device)
-    net.load_state_dict(c["state"]); net.eval()
+    """Diskrete Hazards Mitte und Ausschnitt; der bce-Kopf geht monotonisiert ein (BinaryHorizonHead),
+    der Anteil verletzter Stichtage landet in VIOLATIONS."""
+    net = load_sts(ck, device)
     m_t = torch.from_numpy(mean).float().to(device)[None, None, :, None, None]
     s_t = torch.from_numpy(std).float().to(device)[None, None, :, None, None]
-    hc, hp = [], []
+    bce = isinstance(net.pa_head, BinaryHorizonHead)
+    hc, hp, vc, vp = [], [], [], []
     for a in range(0, X.shape[0], bs):
         x = (X[a:a + bs].float() - m_t) / s_t
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
             raw_px, raw_pa = net(x, torch.from_numpy(doy[a:a + bs]).to(device))
         hc.append(net.px_head.hazards(raw_px[:, HALF, HALF], H).double().cpu().numpy())
         hp.append(net.pa_head.hazards(raw_pa, H).double().cpu().numpy())
+        if bce:
+            vc.append(net.px_head.violations(raw_px[:, HALF, HALF]).cpu().numpy())
+            vp.append(net.pa_head.violations(raw_pa).cpu().numpy())
+    if bce and X.shape[0]:
+        VIOLATIONS.setdefault(Path(ck).name, {})[str(X.shape[0])] = {
+            "centre": float(np.concatenate(vc).mean()), "patch": float(np.concatenate(vp).mean()),
+            "taus": list(net.pa_head.taus)}
+        print(f"[seval] {Path(ck).name}: F nicht monoton bei Mitte {np.concatenate(vc).mean():.4f}, "
+              f"Ausschnitt {np.concatenate(vp).mean():.4f} der Stichtage", flush=True)
     return np.concatenate(hc), np.concatenate(hp)
 
 
@@ -214,6 +227,7 @@ def ensemble(hs: list[np.ndarray]) -> np.ndarray:
 
 def compact(m: dict) -> dict:
     out = {"nll": m["nll"], "ibs": m["integrated_brier"], "c_index": m["concordance_index"],
+           "c_td": m["c_index_td"], "dcal_p": m["d_cal_p"], "dcal_dev": m["d_cal_max_dev"],
            "n": m["n"], "n_events": m["n_events"]}
     for k, v in m["horizons"].items():
         out.update({f"auc@{k}": v["roc_auc"], f"pr@{k}": v["pr_auc"], f"brier@{k}": v["brier"], f"ece@{k}": v["ece"]})
@@ -238,6 +252,10 @@ def main() -> None:
         "pxst:/data/Wildfire/checkpoints/paper/pxst_cache_G_cubeP_s*_s*.pt",
         "sts:/data/Wildfire/checkpoints/paper/sts_cache_G_next_cube_d128_s*_s*.pt"],
         help="art:glob je Modell; art = pxst | sts")
+    ap.add_argument("--subsets", action="store_true",
+                    help="zusaetzlich getrennt nach Feuer im 30-Tage-Fenster (Ausschnitt bzw. Mitte) auswerten")
+    ap.add_argument("--area-weight", action="store_true",
+                    help="zusaetzlich je Flaeche statt je Pixel: Stichtage mit der Pixelflaeche gewichtet (<ziel>_aw)")
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -254,11 +272,27 @@ def main() -> None:
     targets_ = {"centre": (ev["ev_centre"], ev["t_centre"]), "patch": (ev["ev_patch"], ev["t_patch"])}
     res: dict = {}
 
-    def record(model, seed_name, target, h):
+    # Flaechengewicht der Stichtage: Zellen sind gleichverteilt je Gitterpixel gezogen, ein Pixel im Sueden ist
+    # aber bis zu 6-mal groesser als im Norden; mit Gewicht = Pixelflaeche zaehlt jede Flaeche gleich (je km^2)
+    aw = (np.load(exp / "derived_data" / "masks" / "area_weight.npy")[ev["row"], ev["col"]].astype(np.float64)
+          if args.area_weight else None)
+
+    def record(model, seed_name, target, h, mask=None, label=None):
         e, t = targets_[target]
+        if mask is not None:
+            h, e, t = h[mask], e[mask], t[mask]
         m = compact(evaluate(h, e.astype(bool), t.astype(int)))
-        res.setdefault(model, {}).setdefault(target, {})[seed_name] = m
-        print(f"[seval] {model:8s} {seed_name:10s} {target:6s} C {m['c_index']:.3f}  IBS {m['ibs']:.5f}  NLL {m['nll']:.4f}  "
+        res.setdefault(model, {}).setdefault(label or target, {})[seed_name] = m
+        if aw is not None and mask is None and label is None:
+            res[model].setdefault(target + "_aw", {})[seed_name] = compact(
+                evaluate(h, e.astype(bool), t.astype(int), weight=aw))
+        if mask is None and args.subsets:                     # getrennt: Feuer im 30-Tage-Fenster ja / nein
+            fw = ev["fire_win_" + target].astype(bool)
+            record(model, seed_name, target, h, fw, target + "_fire")
+            record(model, seed_name, target, h, ~fw, target + "_nofire")
+        target = label or target
+        print(f"[seval] {model:8s} {seed_name:10s} {target:6s} C {m['c_index']:.3f}  Ctd {m['c_td']:.3f}  "
+              f"D-Cal {m['dcal_dev']:.3f} (p {m['dcal_p']:.2g})  IBS {m['ibs']:.5f}  NLL {m['nll']:.4f}  "
               + "  ".join(f"AUC@{k} {m[f'auc@{k}']:.3f} PR@{k} {m[f'pr@{k}']:.3f}" for k in (7, 30, 100)), flush=True)
 
     # ---- Kaplan-Meier aus zufaelligen Stichtagen der Trainingsjahre
@@ -320,7 +354,11 @@ def main() -> None:
                       "event_rate_100d": {"centre": float(ev["ev_centre"].mean()), "patch": float(ev["ev_patch"].mean())},
                       "fire_in_window": {"centre": float(ev["fire_win_centre"].mean()),
                                          "patch": float(ev["fire_win_patch"].mean())}},
+        "out_name": args.out_name,
+        "area_weight": ("<ziel>_aw: Stichtage mit der Pixelflaeche (masks/area_weight.npy) gewichtet, also je km^2"
+                        if args.area_weight else None),
         "models": args.models, "results": res, "summary": summary, "calibration": calib,
+        "bce_monotonicity_violations": VIOLATIONS,
         "calibration_rule": "Lambda'(tau) = exp(a) * Lambda(tau)^b, a und b per Survival-Likelihood auf Val-Stichtagen "
                             f"{args.val_years}; monoton in tau, S(0) = 1, Rangfolge je Horizont unveraendert",
     })

@@ -42,6 +42,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from wildfire.audit.common import assert_readonly, load_config, write_manifest
+from wildfire.models.ema import EMA
 from wildfire.paper import extra
 from wildfire.paper.channels import CHANNELS
 from wildfire.paper.metrics import ASSUMPTIONS, paper_metrics
@@ -171,13 +172,15 @@ def predict(net, X, idx, chs, t0, t1, mean, std, device, bs=128):
 
 
 def fit(X, y, idx, chs, t0, t1, mean, std, device, seed, epochs=40, patience=6, bs=64, lr=1e-3,
-        select="val_bce"):
+        select="val_bce", ema_decay=0.0):
     """select: "val_bce" = bestes Modell nach Val-BCE mit Abbruch nach patience Epochen;
-    "last" = feste Epochenzahl, das Modell nach der letzten Epoche."""
+    "last" = feste Epochenzahl, das Modell nach der letzten Epoche.
+    ema_decay > 0: Validierung, Auswahl und Rueckgabe mit dem EMA der Gewichte."""
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     net = UNet3D(len(chs)).to(device)
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
+    ema = EMA(net, ema_decay) if ema_decay > 0 else None
     yt = torch.from_numpy(y.astype(np.float32)).to(device)
     best, state, bad, hist = np.inf, None, 0, []
     for ep in range(epochs):
@@ -189,8 +192,17 @@ def fit(X, y, idx, chs, t0, t1, mean, std, device, seed, epochs=40, patience=6, 
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 5.0)
             opt.step()
+            if ema is not None:
+                ema.update(net)
             tl += loss.item() * len(sel); tn += len(sel)
+        live = None
+        if ema is not None:                                 # Validierung mit den gemittelten Gewichten
+            live = {k: v.detach().clone() for k, v in net.state_dict().items()}
+            net.load_state_dict(ema.state(live))
         pv = predict(net, X, idx["val"], chs, t0, t1, mean, std, device)
+        cur = {k: v.detach().clone() for k, v in net.state_dict().items()}
+        if live is not None:
+            net.load_state_dict(live)
         yv = y[idx["val"]]
         vl = float(-np.mean(yv * np.log(pv) + (1 - yv) * np.log(1 - pv)))
         vm = paper_metrics(pv, yv)
@@ -198,15 +210,15 @@ def fit(X, y, idx, chs, t0, t1, mean, std, device, seed, epochs=40, patience=6, 
         print(f"      Epoche {ep:2d}: train {tl / tn:.4f}  val BCE {vl:.4f}  val PR-AUC "
               f"{vm['pr_auc']:.3f}", flush=True)
         if select == "last":
+            state = cur
             continue
         if vl < best - 1e-4:
-            best, bad = vl, 0
-            state = {k: v.detach().clone() for k, v in net.state_dict().items()}
+            best, bad, state = vl, 0, cur
         else:
             bad += 1
             if bad >= patience:
                 break
-    if select != "last":
+    if select != "last" or ema is not None:
         net.load_state_dict(state)
     return net, hist
 
@@ -229,6 +241,8 @@ def main() -> None:
     ap.add_argument("--patience", type=int, default=6)
     ap.add_argument("--select", choices=["val_bce", "last"], default="val_bce",
                     help="Modellauswahl: bestes nach Val-BCE oder letzte Epoche (feste Epochenzahl)")
+    ap.add_argument("--ema", type=float, default=0.0,
+                    help="Abklingfaktor fuer den EMA der Gewichte; 0 = aus (wie im Paper)")
     ap.add_argument("--extra", choices=extra.MODES, default="none",
                     help="zusaetzliche Train-Stichproben aus 2000-2019 (paper_extra.py) anhaengen")
     ap.add_argument("--target", choices=["cache", "next_patch", "next_centre"], default="cache",
@@ -273,7 +287,7 @@ def main() -> None:
             t_run = time.time()
             net, hist = fit(X, y, idx, chs, t0, t1, mean, std, device, seed,
                             epochs=args.epochs, patience=args.patience, bs=args.bs, lr=args.lr,
-                            select=args.select)
+                            select=args.select, ema_decay=args.ema)
             p = {s: predict(net, X, idx[s], chs, t0, t1, mean, std, device) for s in ("val", "test")}
             for s in ("val", "test"):
                 preds[f"{tag}_s{seed}_{s}"] = p[s].astype(np.float32)
@@ -299,7 +313,7 @@ def main() -> None:
         "cache": args.cache, "norm": args.norm, "norm_info": ninfo, "target": args.target, "extra": args.extra, "n_train": int(idx["train"].size),
         "model": "UNet3D, Breite 32, 2 Pooling-Stufen, globales Pooling, BCE",
         "training": {"bs": args.bs, "lr": args.lr, "max_epochs": args.epochs, "patience": args.patience,
-                     "optimizer": "AdamW, weight_decay 1e-4", "selection": args.select},
+                     "optimizer": "AdamW, weight_decay 1e-4", "selection": args.select, "ema": args.ema},
         "metric_assumptions": ASSUMPTIONS, "target_pr_auc_paper": 0.68,
         "runs": runs,
     })

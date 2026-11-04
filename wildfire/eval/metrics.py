@@ -279,6 +279,74 @@ def concordance_index(risk, event, t_event, weight=None) -> tuple[float, float]:
     return ((conc + 0.5 * tie) / denom if denom > 0 else float("nan")), denom
 
 
+def antolini_c(F: np.ndarray, event, t_event, weight=None) -> float:
+    """Zeitabhaengiger C-Index nach Antolini et al. (2005).
+
+    Anders als ``concordance_index`` wird nicht nach EINEM Risiko sortiert,
+    sondern je Paar zum Ereigniszeitpunkt verglichen: Hat i an Tag k gezuendet
+    und j war an k noch ohne Ereignis (T_j > k, oder zensiert bei k), soll
+    F_i(k) > F_j(k) sein. Damit zaehlt die ganze Kurve, nicht nur F(H) - fuer
+    Modelle, deren Kurven sich kreuzen (nicht proportional), ist das die
+    passende Rangmetrik. Bindungen im Risiko zaehlen halb. Zensierung ist
+    administrativ (siehe Modulkopf), eine IPCW-Korrektur entfaellt.
+    """
+    F = np.asarray(F)
+    ev = np.asarray(event).astype(bool)
+    T = np.asarray(t_event, np.int64)
+    w = np.ones(T.size) if weight is None else np.asarray(weight, float)
+    conc = tie = tot = 0.0
+    for k in np.unique(T[ev]):
+        e = np.flatnonzero(ev & (T == k))
+        comp = (T > k) | ((T == k) & ~ev)
+        if not comp.any():
+            continue
+        o = np.argsort(F[comp, k - 1], kind="mergesort")
+        fs = F[comp, k - 1][o]
+        cw = np.concatenate(([0.0], np.cumsum(w[comp][o])))
+        fe = F[e, k - 1]
+        lo, hi = np.searchsorted(fs, fe, "left"), np.searchsorted(fs, fe, "right")
+        conc += float((w[e] * cw[lo]).sum())
+        tie += float((w[e] * (cw[hi] - cw[lo])).sum())
+        tot += float(w[e].sum() * cw[-1])
+    return (conc + 0.5 * tie) / tot if tot > 0 else float("nan")
+
+
+def d_calibration(F: np.ndarray, event, t_event, weight=None, n_bins: int = 10) -> dict:
+    """D-Calibration (Haider et al., JMLR 2020) fuer tagesgenaue Ereignisse.
+
+    Ist das Modell kalibriert, ist S(T) gleichverteilt auf [0, 1]. Ein Ereignis
+    an Tag k liegt im Intervall (k-1, k], sein S(T) also irgendwo in
+    [S(k), S(k-1)]; es verteilt eine Einheit gleichmaessig auf dieses
+    Intervall. Zensiert bei c gilt nur S(T) <= S(c): eine Einheit gleichmaessig
+    auf [0, S(c)] (wie bei Haider). Die Anteile je Bin werden mit 1 / n_bins
+    verglichen - Chi-Quadrat mit der effektiven Stichprobengroesse und die
+    groesste Abweichung. Bei 100.000 Stichtagen ist der Test sehr scharf; die
+    Abweichung zeigt, ob der Fehler auch praktisch zaehlt.
+    """
+    from scipy.stats import chi2
+
+    F = np.asarray(F, np.float64)
+    ev = np.asarray(event).astype(bool)
+    T = np.asarray(t_event, np.int64)
+    w = np.ones(T.size) if weight is None else np.asarray(weight, float)
+    S = np.concatenate([np.ones((F.shape[0], 1)), 1.0 - F], 1)       # S(0..H)
+    idx = np.arange(T.size)
+    a = np.where(ev, S[idx, T], 0.0)
+    b = np.where(ev, S[idx, np.maximum(T - 1, 0)], S[idx, T])
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    width = b - a
+    ov = np.clip(np.minimum(b[:, None], edges[None, 1:]) - np.maximum(a[:, None], edges[None, :-1]), 0.0, None)
+    point = width < 1e-12
+    ov[~point] /= width[~point, None]
+    if point.any():
+        ov[point] = np.eye(n_bins)[np.clip(np.searchsorted(edges, a[point], "right") - 1, 0, n_bins - 1)]
+    prop = (w[:, None] * ov).sum(0) / w.sum()
+    n_eff = w.sum() ** 2 / (w ** 2).sum()
+    stat = float(n_eff * ((prop - 1 / n_bins) ** 2).sum() * n_bins)
+    return {"d_cal_chi2": stat, "d_cal_p": float(chi2.sf(stat, n_bins - 1)),
+            "d_cal_max_dev": float(np.abs(prop - 1 / n_bins).max()), "d_cal_bins": prop.tolist()}
+
+
 def evaluate(h, event, t_event, weight=None, horizons=(1, 7, 14, 30, 60, 100),
              far=0.01, alarm_threshold=0.01) -> dict:
     """Vollstaendiger Metriksatz nach Phase 8.1 des Arbeitsplans."""
@@ -300,6 +368,8 @@ def evaluate(h, event, t_event, weight=None, horizons=(1, 7, 14, 30, 60, 100),
     # Risiko ist F am Horizont - die Groesse, nach der auch sortiert wuerde.
     c_idx, c_pairs = concordance_index(F[:, H - 1], event, t_event, weight)
     out["concordance_index"] = c_idx
+    out["c_index_td"] = antolini_c(F, event, t_event, weight)
+    out.update(d_calibration(F, event, t_event, weight))
     out["concordance_pairs"] = c_pairs
     for t in hs:
         auc, ap = auc_and_pr_at(h, event, t_event, t, weight, F)

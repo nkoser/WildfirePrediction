@@ -24,6 +24,17 @@ TARGETS = ("cache", "next_patch")
 CENTRE = 6
 
 
+def base_cache(cache: str) -> str:
+    """Cache des Papers hinter einer abgeleiteten Variante (flaechentreu: <cache>_ea), z. B. fuer norm_stats."""
+    return cache[:-3] if cache.endswith("_ea") else cache
+
+
+def ok_mask(d: Path):
+    """Flaechentreuer Cache (ea_build): (N,) bool, alle 61 Fenstertage im Wuerfel; sonst None."""
+    p = d / "ok.npy"
+    return np.load(p) if p.exists() else None
+
+
 def shift(target: str) -> int:
     return 0 if target == "cache" else 1
 
