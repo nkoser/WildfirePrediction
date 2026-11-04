@@ -65,7 +65,7 @@ body {
   font: 600 15px/1.3 var(--font-display); letter-spacing: 0.01em;
   pointer-events: none;
 }
-.map-title .muted { color: var(--ink-3); font-weight: 600; }
+.map-title .muted, .map-title .busy { color: var(--ink-3); font-weight: 600; }
 .tip {
   position: absolute; z-index: 900; pointer-events: none; min-width: 168px;
   padding: 7px 9px; border: 1px solid var(--rule); border-radius: 4px;
@@ -153,6 +153,10 @@ input[type="range"] { width: 100%; margin: 4px 0 0; accent-color: var(--ink); cu
 .curve .pt.on { fill: var(--ink); }
 .curve .obs line { stroke: var(--fire-after); stroke-width: 1.5; stroke-dasharray: 3 3; }
 .curve .obs text { fill: var(--fire-after); font-size: 10.5px; font-weight: 600; }
+.curve .hover line { stroke: var(--ink-3); stroke-width: 1; }
+.curve .hover circle { fill: var(--ink); }
+.curve .hover text { fill: var(--ink); font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.curve .hit { fill: transparent; pointer-events: all; cursor: pointer; }
 .vals { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .vals th, .vals td { padding: 3px 0; border-bottom: 1px solid var(--rule); text-align: right; font-weight: 400; }
 .vals th { color: var(--ink-3); }

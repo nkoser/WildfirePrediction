@@ -1,24 +1,24 @@
 # Interactive demo
 
-An anonymous, self-contained results page for the supplementary material, and later the public demo
-backed by a hosted model.
+The paper's public, interactive results page: a static site that goes online with the arXiv version, so
+anyone can explore the forecasts, and later the front end of a hosted model.
 
-**Status (2026-11-04):** the page shows real model output: `risk_map.py` maps from a Contagion-STS (three seeds)
-for seven test-period forecast dates, lead times 1, 3, 7, 14 and 30 days. Another model is a re-export of its
-`risk_map.py` files with a new label; the page code does not change. `tools/make_placeholder.py` makes
-stand-in data in the same format when no model output is at hand.
+**Status (2026-11-04):** the page shows real model output: `risk_map.py` maps from a Contagion-STS (three
+seeds) for seven test-period forecast dates, every lead time from 1 to 30 days. Another model is a re-export
+of its `risk_map.py` files with a new label; the page code does not change. `tools/make_placeholder.py`
+makes stand-in data in the same format when no model output is at hand.
 
 ## What the page shows
 
 - A map of F(τ), the probability that a pixel has its first MODIS fire detection within τ days after the
   forecast date, on the paper figure's log color scale (OrRd, 1e-4 up to the 99.9th percentile of F at
   the largest τ).
-- A forecast-date picker and a lead-time slider. The slider reads the same forecast at every τ in the
-  export, which is the paper's point: one model, one curve, all lead times.
+- A forecast-date picker and a lead-time slider through every exported τ (daily, 1 to 30). The slider reads
+  the same forecast at every τ, which is the paper's point: one model, one curve, all lead times.
 - Fires in the 30 input days (black) and fires after the forecast date within τ (blue), as in the paper's
   figure, drawn only inside the forecast area.
-- Hover for the value under the cursor; click for the pixel's risk curve, its values and the observed
-  outcome.
+- Hover for the value under the cursor; click for the pixel's risk curve over all lead times, its values
+  and the observed outcome. Hovering the curve reads a lead time; clicking it moves the map there.
 - Following the paper's limitations, no predicted-arrival maps and no ignition/spread split.
 
 ## Layout
@@ -29,7 +29,7 @@ demo/
   tools/         make_placeholder.py, make_basemap.py, export_web.py, build.py, check_page.py, common.py
   web/           template.html, style.css, app.js, basemap.json (Natural Earth 1:50m, generated)
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), IBM Plex Sans fonts (SIL OFL 1.1), with their licenses
-  dist/          build output, not in git
+  dist/          build output, not in git: site/ (the deployable site), artifact/ (a preview fragment)
 ```
 
 ## Build
@@ -37,18 +37,37 @@ demo/
 Python 3.12 with numpy and pillow; the check also needs playwright with Chromium.
 
 ```bash
-# 1. data manifest from risk_map.py outputs (or from make_placeholder.py, see below)
+# 1. data directory from risk_map.py outputs (or from make_placeholder.py, see below)
 python -I demo/tools/export_web.py /data/Wildfire/figures/risk_maps/risk_cg2w_ema_*.npz \
     --model-id contagion-sts --model-label Contagion-STS \
-    --model-detail "ensemble of 3 seeds, raw probabilities" --out work/data.json
-# 2. page: dist/supplement/index.html (complete document) and dist/artifact/*.html (fragment)
-python -I demo/tools/build.py --data work/data.json
-# 3. open it from file:// in headless Chromium; fails on any script error or network request
-python -I demo/tools/check_page.py demo/dist/supplement/index.html --shots work/shots
+    --model-detail "ensemble of 3 seeds, raw probabilities" --out work/data
+# 2. site: dist/site/ (index.html, data/ copied from step 1, .nojekyll) and dist/artifact/*.html (fragment)
+python -I demo/tools/build.py --data work/data
+# 3. serve dist/site on 127.0.0.1 and drive it in headless Chromium; fails on any script error,
+#    failed request or request to another origin, or when the page does not respond as expected
+python -I demo/tools/check_page.py demo/dist/site --shots work/shots
 ```
+
+To look at it locally: `python3 -m http.server -d demo/dist/site` and open the printed address. The page
+fetches its data, so opening `index.html` from disk does not work.
 
 Placeholder inputs: `make_placeholder.py --mcd14a1 <dir with MCD14A1__<year>.tar> --naturalearth <dir> --out work/placeholder`.
 Basemap: `make_basemap.py --naturalearth <dir with ne_50m_*.geojson> --out demo/web/basemap.json`.
+
+## Hosting
+
+`dist/site` is static files only, so GitHub Pages serves it as is (`.nojekyll` is included), as does any
+static host or storage bucket.
+
+- **Page:** about 1 MB, with Leaflet, the fonts and the basemap inlined.
+- **Data:** a risk layer is about 270 KB (174 to 376 KB for the seven dates), so a forecast date with 30
+  lead times is about 8 MB and the seven dates about 57 MB.
+- **Loading:** the first view loads the manifest, the observed fires and the layers it needs at once (the
+  chosen lead time, plus the first and last to pick the starting location); the date's other lead times load
+  right after, four at a time, for the risk curve.
+- **GitHub Pages limits** (GitHub docs, read 2026-11-04): 1 GB per published site, 1 GB recommended per
+  repository, a soft 100 GB per month of bandwidth. Daily live forecasts at about 8 MB a day should not
+  pile up in a git repository; they belong with the service that makes them (see below).
 
 ## Data in: risk-map files
 
@@ -63,10 +82,12 @@ One `.npz` per model and forecast date, as written by `wildfire/paper/risk_map.p
 
 `ign_<tau>`, `fire_today` and the rest are ignored. H × W and the georeference must match `grid.json`.
 
-## Data out: the manifest (schema `wildfire-demo/1`)
+## Data out: the data directory (schema `wildfire-demo/2`)
 
-`export_web.py` writes one JSON document. The page reads nothing else, so the same document, with layer
-URLs in place of embedded images, is the draft contract for a hosted model.
+`export_web.py` writes `manifest.json` and, per model and date, `risk-<tau>.png` and `observed.png` under
+`<model>/<date>/`. Every path in the manifest is relative to the manifest's URL, and the page reads nothing
+else, so a hosted model that publishes the same directory, or serves the same files with CORS, drives the
+page without code changes. This is the draft contract for that service.
 
 | field | meaning |
 |---|---|
@@ -74,19 +95,15 @@ URLs in place of embedded images, is the draft contract for a hosted model.
 | `quant` | risk layers are 8-bit grayscale PNG: 1..255 on a log10 scale from `vmin` to `vmax`, 0 = no data |
 | `display` | color-scale range |
 | `models` | `id`, `label`, `detail` |
-| `forecasts[]` | `model`, `date`, `taus`, `risk[tau]` (PNG), `observed` (PNG: bit 7 = fire in the input window, bits 0-6 = first fire day after the date), `observed_days` |
+| `forecasts[]` | `model`, `date`, `taus`, `risk[tau]` (path of a PNG), `observed` (path of a PNG: bit 7 = fire in the input window, bits 0-6 = first fire day after the date), `observed_days` |
 | `placeholder` | true when any input was a placeholder; the page then shows a banner |
 | `notes` | footnotes shown under the panel |
 | `default` | date and lead time the page opens on |
 
-Size: about 350 KB per risk layer of model output (150 KB for the smoother placeholder), so 7 dates × 5 lead
-times build to 12.8 MB. Nine lead times would make 22 MB, above the 16 MB limit of the preview host.
+## Checks
 
-## Rules for the supplement copy
-
-- No external link or request: the venue's author guidelines forbid links that expand the submission, and a
-  request to a server would reveal when reviewers open the page. Everything is inlined; the page opens from
-  disk with no server.
-- No identifying names, institutions, repositories or paths.
-- `build.py` fails if the page contains an http(s) URL outside a short allow-list (Leaflet's license
-  header, the SVG namespace) or an identifying string; `check_page.py` fails on any network request.
+- The page is self-contained: every script, font and the basemap ship with it, and it requests nothing
+  but its own data. `build.py` fails on an http(s) URL outside a short allow-list (Leaflet's license
+  header, the SVG namespace); `check_page.py` fails on any request to another origin.
+- `build.py` also fails on local paths and on wording about the paper's review status in the page or the
+  manifest; `--forbid PATTERN` adds patterns of its own.

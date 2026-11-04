@@ -1,18 +1,19 @@
-"""Assemble the demo page from demo/web, demo/vendor and a data manifest, in two variants:
+"""Assemble the demo from demo/web, demo/vendor and a data directory written by export_web.py:
 
-    <out>/supplement/index.html   a complete, self-contained document for the supplementary zip;
-                                  opens from file:// and makes no request to any server
+    <out>/site/          the public site: index.html, data/ (manifest and layers), .nojekyll. Static files
+                         only, so any static host serves it as is (GitHub Pages, a storage bucket).
     <out>/artifact/wildfire-survival-explorer.html
-                                  the same page as a fragment (title, style, body, scripts) for a host that
-                                  supplies its own <html>/<head>/<body> skeleton
+                         the same page as a fragment (title, style, body, scripts) for a preview host that
+                         supplies its own <html>/<head>/<body> skeleton; publish it with <out>/site/data
+                         next to it.
 
-Both inline everything: Leaflet, fonts, basemap and data. Then two checks run on the supplement file and
-the build fails if either finds something:
-  * external references: any http(s) URL outside a short allow-list (Leaflet's license header, the SVG
-    namespace), since the venue forbids links that expand the submission and a request would reveal reviewers;
-  * identifying strings: names, repository, institution and cluster paths, for double-blind review.
+The page inlines Leaflet, the fonts and the basemap; it fetches only data/manifest.json and the layers the
+manifest names, on demand. Before anything is written, the page and the manifest are checked for
+  * any http(s) URL outside a short allow-list, so the page makes no third-party request;
+  * local paths, and wording about the paper being under submission or review;
+  * any pattern given with --forbid (names or wording that must stay off the public page).
 
-    python -I demo/tools/build.py --data <data.json> [--basemap demo/web/basemap.json] [--out demo/dist]
+    python -I demo/tools/build.py --data <export dir> [--out demo/dist] [--forbid PATTERN ...]
 """
 
 from __future__ import annotations
@@ -20,15 +21,15 @@ from __future__ import annotations
 import argparse
 import base64
 import re
+import shutil
 from pathlib import Path
 
 DEMO = Path(__file__).resolve().parents[1]
 TITLE = "Wildfire Survival Explorer"
 ALLOWED_URLS = {"https://leafletjs.com", "http://www.w3.org/2000/svg"}
-IDENTIFYING = [r"koser", r"niklas", r"bartkowiak", r"patryk", r"wildfireprediction", r"github\.com",
-               r"/mnt/", r"/home/", r"/data/wildfire", r"/raid/", r"vcai", r"pcss", r"pozna", r"\bamu\b",
-               r"\beagle\b", r"lübeck|luebeck", r"overleaf", r"anonymousdata4neurips"]
-ARTIFACT_LIMIT = 16 * 2**20
+FORBIDDEN = [r"under (double-blind )?(submission|review)", r"/mnt/", r"/home/", r"/raid/", r"/data/wildfire"]
+# limits of the preview host, so the build says when the preview needs more than one publish
+PREVIEW_FILE_LIMIT, PREVIEW_PUBLISH_BYTES, PREVIEW_PUBLISH_FILES = 15 * 2**20, 64 * 2**20, 255
 
 
 def fonts_css() -> str:
@@ -54,31 +55,35 @@ def json_script(id_: str, text: str) -> str:
     return f'<script type="application/json" id="{id_}">{text}</script>'
 
 
-def check(html: str) -> list[str]:
+def check(texts: dict[str, str], forbidden: list[str]) -> list[str]:
     problems = []
-    visible = re.sub(r"data:[a-z0-9/+.-]+;base64,[A-Za-z0-9+/=]+", "data:", html)
-    for url in sorted(set(re.findall(r"https?://[^\s\"'<>)\\]+", visible))):
-        if url.rstrip("/.,;") not in ALLOWED_URLS:
-            problems.append(f"external URL: {url}")
-    for pat in IDENTIFYING:
-        for m in re.finditer(pat, visible, flags=re.IGNORECASE):
-            ctx = visible[max(0, m.start() - 40):m.end() + 40].replace("\n", " ")
-            problems.append(f"identifying string /{pat}/: ...{ctx}...")
-            break
+    for name, text in texts.items():
+        visible = re.sub(r"data:[a-z0-9/+.-]+;base64,[A-Za-z0-9+/=]+", "data:", text)
+        for url in sorted(set(re.findall(r"https?://[^\s\"'<>)\\]+", visible))):
+            if url.rstrip("/.,;") not in ALLOWED_URLS:
+                problems.append(f"{name}: external URL: {url}")
+        for pat in forbidden:
+            m = re.search(pat, visible, flags=re.IGNORECASE)
+            if m:
+                ctx = visible[max(0, m.start() - 40):m.end() + 40].replace("\n", " ")
+                problems.append(f"{name}: /{pat}/: ...{ctx}...")
     return problems
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", type=Path, required=True)
+    ap.add_argument("--data", type=Path, required=True, help="directory written by export_web.py")
     ap.add_argument("--basemap", type=Path, default=DEMO / "web" / "basemap.json")
     ap.add_argument("--out", type=Path, default=DEMO / "dist")
+    ap.add_argument("--forbid", action="append", default=[], help="regular expression the page must not contain")
     args = ap.parse_args()
+    manifest = args.data / "manifest.json"
+    if not manifest.is_file():
+        raise SystemExit(f"{manifest} not found; run export_web.py first")
 
     style = "\n".join([fonts_css(), leaflet_css(), (DEMO / "web" / "style.css").read_text()])
     body = (DEMO / "web" / "template.html").read_text()
     scripts = "\n".join([
-        json_script("wf-data", args.data.read_text()),
         json_script("wf-basemap", args.basemap.read_text()),
         "<script>" + (DEMO / "vendor" / "leaflet-1.9.4" / "leaflet.js").read_text() + "</script>",
         "<script>" + (DEMO / "web" / "app.js").read_text() + "</script>",
@@ -88,18 +93,33 @@ def main() -> None:
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
                 f"<title>{TITLE}</title>\n<style>\n{style}\n</style>\n</head>\n<body>\n{body}\n{scripts}\n</body>\n</html>\n")
 
-    problems = check(document)
+    problems = check({"page": document, "manifest": manifest.read_text()}, FORBIDDEN + args.forbid)
     if problems:
         raise SystemExit("build check failed:\n  " + "\n  ".join(problems))
-    sup = args.out / "supplement" / "index.html"
+
+    site = args.out / "site"
+    if site.exists():
+        shutil.rmtree(site)
+    shutil.copytree(args.data, site / "data")
+    (site / "index.html").write_text(document)
+    (site / ".nojekyll").write_text("")
     art = args.out / "artifact" / "wildfire-survival-explorer.html"
-    for path, text in ((sup, document), (art, fragment)):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    size = art.stat().st_size
-    print(f"[build] {sup} {sup.stat().st_size / 2**20:.2f} MB")
-    print(f"[build] {art} {size / 2**20:.2f} MB" + (" - OVER the 16 MB artifact limit" if size > ARTIFACT_LIMIT else ""))
-    print("[build] checks passed: no external URL outside the allow-list, no identifying string")
+    art.parent.mkdir(parents=True, exist_ok=True)
+    art.write_text(fragment)
+
+    files = [p for p in (site / "data").rglob("*") if p.is_file()]
+    total = sum(p.stat().st_size for p in files)
+    big = max(p.stat().st_size for p in files)
+    print(f"[build] {site}: index.html {(site / 'index.html').stat().st_size / 2**20:.2f} MB, "
+          f"data/ {len(files)} files, {total / 2**20:.1f} MB (largest {big / 2**20:.2f} MB)")
+    print(f"[build] {art} {art.stat().st_size / 2**20:.2f} MB")
+    publishes = max(-(-total // PREVIEW_PUBLISH_BYTES), -(-len(files) // PREVIEW_PUBLISH_FILES))
+    if big > PREVIEW_FILE_LIMIT:
+        print(f"[build] a data file is over the preview host's {PREVIEW_FILE_LIMIT / 2**20:.0f} MB per-file limit")
+    elif publishes > 1:
+        print(f"[build] the preview needs {publishes} publishes to hold data/ "
+              f"(at most {PREVIEW_PUBLISH_FILES} files and {PREVIEW_PUBLISH_BYTES / 2**20:.0f} MB each)")
+    print("[build] checks passed: no external URL outside the allow-list, no forbidden pattern")
 
 
 if __name__ == "__main__":
