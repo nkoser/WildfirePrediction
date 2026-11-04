@@ -3,9 +3,10 @@
 An anonymous, self-contained results page for the supplementary material, and later the public demo
 backed by a hosted model.
 
-**Status (2026-11-04):** the page runs on placeholder risk values (`tools/make_placeholder.py`) with the real
-MODIS fires of MPCFire. It switches to model output by re-running the export on the `risk_map.py` files;
-no code changes.
+**Status (2026-11-04):** the page shows real model output: `risk_map.py` maps from a Contagion-STS (three seeds)
+for seven test-period forecast dates, lead times 1, 3, 7, 14 and 30 days. Another model is a re-export of its
+`risk_map.py` files with a new label; the page code does not change. `tools/make_placeholder.py` makes
+stand-in data in the same format when no model output is at hand.
 
 ## What the page shows
 
@@ -76,8 +77,10 @@ URLs in place of embedded images, is the draft contract for a hosted model.
 | `forecasts[]` | `model`, `date`, `taus`, `risk[tau]` (PNG), `observed` (PNG: bit 7 = fire in the input window, bits 0-6 = first fire day after the date), `observed_days` |
 | `placeholder` | true when any input was a placeholder; the page then shows a banner |
 | `notes` | footnotes shown under the panel |
+| `default` | date and lead time the page opens on |
 
-Size: about 150 KB per risk layer, so 4 dates × 5 lead times build to 4.9 MB.
+Size: about 350 KB per risk layer of model output (150 KB for the smoother placeholder), so 7 dates × 5 lead
+times build to 12.8 MB. Nine lead times would make 22 MB, above the 16 MB limit of the preview host.
 
 ## Rules for the supplement copy
 

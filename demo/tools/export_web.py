@@ -56,7 +56,12 @@ def main() -> None:
     ap.add_argument("--model-detail", default="ensemble of 3 seeds, raw probabilities")
     ap.add_argument("--note", action="append", help="footnote shown on the page (repeatable; replaces the defaults)")
     ap.add_argument("--vmin", type=float, default=1e-4, help="lower end of the color scale")
+    ap.add_argument("--taus", help="comma-separated subset of lead times to export (default: all in the files)")
+    ap.add_argument("--dates", nargs="+", help="subset of forecast dates to export (default: all files)")
+    ap.add_argument("--default-date", default="2023-06-01", help="date the page opens on (the draft figure's)")
+    ap.add_argument("--default-tau", type=int, default=7, help="lead time the page opens on (the draft figure's)")
     args = ap.parse_args()
+    keep_taus = [int(t) for t in args.taus.split(",")] if args.taus else None
     g = load_grid()
     shape = (g["height"], g["width"])
 
@@ -65,6 +70,13 @@ def main() -> None:
         z = np.load(path, allow_pickle=False)
         taus = [int(t) for t in z["taus"]]
         date = str(z["date"])
+        if args.dates and date not in args.dates:
+            continue
+        if keep_taus:
+            missing = sorted(set(keep_taus) - set(taus))
+            if missing:
+                raise SystemExit(f"{path.name}: lead times {missing} are not in the file ({taus})")
+            taus = keep_taus
         placeholder |= bool(z["placeholder"]) if "placeholder" in z.files else False
         risk = {}
         for t in taus:
@@ -74,6 +86,7 @@ def main() -> None:
             risk[str(t)] = data_uri(encode_png(quantize_log(F)))
         tops.append(float(np.nanpercentile(z[f"F_{max(taus)}"], 99.9)))
         first = z["first_fire"].astype(np.int64)
+        first[first > max(taus)] = 0                      # observed window = the exported lead times
         if first.max() > 127:
             raise SystemExit(f"{path.name}: first_fire reaches {first.max()}, the encoding holds 0..127")
         observed = ((z["fire_window"].astype(np.uint8) << 7) | first.astype(np.uint8)).astype(np.uint8)
@@ -93,6 +106,7 @@ def main() -> None:
         "quant": QUANT,
         "display": {"scale": "log10", "vmin": args.vmin, "vmax": nice_up(max(tops))},
         "input_days": 30,
+        "default": {"date": args.default_date, "tau": args.default_tau},
         "models": [model],
         "forecasts": forecasts,
         "notes": args.note or NOTES,

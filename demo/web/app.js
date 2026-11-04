@@ -467,10 +467,13 @@
     const firstDay = e.obs[idx] & 127;
     if (firstDay > 0) {
       const g = svg('g', { class: 'obs' });
-      const xx = x(Math.min(firstDay, tMax));
+      const day = Math.min(firstDay, tMax), xx = x(day);
       g.append(svg('line', { x1: xx, x2: xx, y1: m.t, y2: H - m.b }));
+      // label where the curve is not: next to the axis when the curve runs high at that day
+      const near = pts.reduce((a, p) => (Math.abs(p.t - day) < Math.abs(a.t - day) ? p : a));
+      const low = y(near.F) < (m.t + H - m.b) / 2;
       const right = xx > W - 110;
-      g.append(svg('text', { x: right ? xx - 4 : xx + 4, y: m.t + 9, 'text-anchor': right ? 'end' : 'start' }, `fire on day ${firstDay}`));
+      g.append(svg('text', { x: right ? xx - 4 : xx + 4, y: low ? H - m.b - 5 : m.t + 9, 'text-anchor': right ? 'end' : 'start' }, `fire on day ${firstDay}`));
       s.append(g);
     }
     s.append(svg('polyline', { class: 'line', points: pts.map((p) => `${x(p.t)},${y(p.F)}`).join(' ') }));
@@ -494,12 +497,21 @@
     });
   }
 
-  // a starting location: the highest-risk pixel at the shown lead time that was not burning in the input
+  // A starting location that shows what a risk curve is for: below 1% for the first lead time, the highest
+  // risk at the last one, no fire in the input window, and a fire observed afterwards. It is an example;
+  // the reader can click anywhere. Without such a pixel: the highest risk at the shown lead time.
+  const fToQ = (F) => 1 + Math.round(((Math.log10(F) - LOG_QMIN) / LOG_QSPAN) * (Q.levels - 1));
   function pickStart(e) {
-    const raw = e.risk[tauNow()].raw;
+    const taus = e.fc.taus, first = e.risk[taus[0]].raw, last = e.risk[taus[taus.length - 1]].raw;
+    const cap = fToQ(0.01);
     let best = -1, bestQ = 0;
-    for (let i = 0; i < raw.length; i++) {
-      if (raw[i] > bestQ && (e.obs[i] >> 7) === 0) { bestQ = raw[i]; best = i; }
+    for (let i = 0; i < last.length; i++) {
+      const o = e.obs[i];
+      if ((o >> 7) === 0 && (o & 127) > 0 && first[i] > 0 && first[i] < cap && last[i] > bestQ) { bestQ = last[i]; best = i; }
+    }
+    if (best < 0) {
+      const raw = e.risk[tauNow()].raw;
+      for (let i = 0; i < raw.length; i++) if (raw[i] > bestQ && (e.obs[i] >> 7) === 0) { bestQ = raw[i]; best = i; }
     }
     return best < 0 ? null : { row: Math.floor(best / G.width), col: best % G.width };
   }
@@ -554,11 +566,14 @@
   readTheme();
   styleBasemap();
   renderKey();
+  // opening view: the manifest's default (the paper figure's date and lead time), else the first date at 7 days
   const dates = datesFor(state.model);
-  const first = forecastFor(state.model, dates[0]);
-  const i7 = first.taus.indexOf(7);
-  state.tauIdx = i7 >= 0 ? i7 : Math.floor(first.taus.length / 2);
-  setDate(dates[0]).then(() => {
+  const want = manifest.default || {};
+  const startDate = dates.includes(want.date) ? want.date : dates[0];
+  const startFc = forecastFor(state.model, startDate);
+  const it = startFc.taus.indexOf(want.tau || 7);
+  state.tauIdx = it >= 0 ? it : Math.floor(startFc.taus.length / 2);
+  setDate(startDate).then(() => {
     requestAnimationFrame(() => { window.__wfReady = true; });
   });
 })();
