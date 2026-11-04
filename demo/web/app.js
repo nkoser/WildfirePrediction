@@ -196,6 +196,7 @@
     before: true,
     after: true,
     sel: null,          // {row, col}
+    selRule: null,      // how the starting location was chosen; null once the reader picks one
     entry: null,        // decoded layers of the shown forecast
   };
   const datesFor = (model) => manifest.forecasts.filter((f) => f.model === model).map((f) => f.date).sort();
@@ -377,6 +378,7 @@
     const cell = cellAt(ev.latlng);
     if (!cell || !state.entry || !state.entry.risk[tauNow()].raw[cell.row * G.width + cell.col]) return;
     state.sel = cell;
+    state.selRule = null;
     renderSelection();
   });
 
@@ -485,6 +487,7 @@
     $('curve').replaceChildren(s);
 
     $('loc-outcome').textContent = 'Observed: ' + observedText(e, idx, true).join(' ');
+    $('loc-hint').textContent = state.selRule || 'Click anywhere on the map to pick another location.';
     const table = $('vals');
     table.replaceChildren();
     const head = el('tr');
@@ -509,10 +512,16 @@
       const o = e.obs[i];
       if ((o >> 7) === 0 && (o & 127) > 0 && first[i] > 0 && first[i] < cap && last[i] > bestQ) { bestQ = last[i]; best = i; }
     }
+    let rule = `Starting location: among pixels with no fire in the ${manifest.input_days} days before the forecast date `
+      + `and a fire observed afterwards, the one with the highest risk within ${plural(taus[taus.length - 1], 'day')} `
+      + `while its risk within ${plural(taus[0], 'day')} stays below 1%. Click anywhere on the map to pick another location.`;
     if (best < 0) {
       const raw = e.risk[tauNow()].raw;
       for (let i = 0; i < raw.length; i++) if (raw[i] > bestQ && (e.obs[i] >> 7) === 0) { bestQ = raw[i]; best = i; }
+      rule = 'Starting location: the highest risk at this lead time among pixels with no fire before the forecast date. '
+        + 'Click anywhere on the map to pick another location.';
     }
+    state.selRule = best < 0 ? null : rule;
     return best < 0 ? null : { row: Math.floor(best / G.width), col: best % G.width };
   }
 
@@ -529,6 +538,7 @@
   }
   async function setDate(date) {
     state.date = date;
+    if (state.sel) state.selRule = null;   // the starting-location rule described the first date only
     const fc = fcNow();
     state.tauIdx = Math.min(state.tauIdx, fc.taus.length - 1);
     renderDates(); renderLead(); renderTitle();
