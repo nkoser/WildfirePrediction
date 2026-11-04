@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import math
 import re
 import shutil
 from pathlib import Path
@@ -29,7 +30,7 @@ TITLE = "Wildfire Survival Explorer"
 ALLOWED_URLS = {"https://leafletjs.com", "http://www.w3.org/2000/svg"}
 FORBIDDEN = [r"under (double-blind )?(submission|review)", r"/mnt/", r"/home/", r"/raid/", r"/data/wildfire"]
 # limits of the preview host, so the build says when the preview needs more than one publish
-PREVIEW_FILE_LIMIT, PREVIEW_PUBLISH_BYTES, PREVIEW_PUBLISH_FILES = 15 * 2**20, 64 * 2**20, 255
+PREVIEW_FILE_LIMIT, PREVIEW_PUBLISH_BYTES, PREVIEW_PUBLISH_FILES = 15e6, 64e6, 255
 
 
 def fonts_css() -> str:
@@ -110,15 +111,15 @@ def main() -> None:
     files = [p for p in (site / "data").rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in files)
     big = max(p.stat().st_size for p in files)
-    print(f"[build] {site}: index.html {(site / 'index.html').stat().st_size / 2**20:.2f} MB, "
-          f"data/ {len(files)} files, {total / 2**20:.1f} MB (largest {big / 2**20:.2f} MB)")
-    print(f"[build] {art} {art.stat().st_size / 2**20:.2f} MB")
-    publishes = max(-(-total // PREVIEW_PUBLISH_BYTES), -(-len(files) // PREVIEW_PUBLISH_FILES))
+    print(f"[build] {site}: index.html {(site / 'index.html').stat().st_size / 1e6:.2f} MB, "
+          f"data/ {len(files)} files, {total / 1e6:.1f} MB (largest {big / 1e6:.2f} MB)")
+    print(f"[build] {art} {art.stat().st_size / 1e6:.2f} MB")
+    publishes = max(math.ceil(total / PREVIEW_PUBLISH_BYTES), math.ceil(len(files) / PREVIEW_PUBLISH_FILES))
     if big > PREVIEW_FILE_LIMIT:
-        print(f"[build] a data file is over the preview host's {PREVIEW_FILE_LIMIT / 2**20:.0f} MB per-file limit")
+        print(f"[build] a data file is over the preview host's {PREVIEW_FILE_LIMIT / 1e6:.0f} MB per-file limit")
     elif publishes > 1:
         print(f"[build] the preview needs {publishes} publishes to hold data/ "
-              f"(at most {PREVIEW_PUBLISH_FILES} files and {PREVIEW_PUBLISH_BYTES / 2**20:.0f} MB each)")
+              f"(at most {PREVIEW_PUBLISH_FILES} files and {PREVIEW_PUBLISH_BYTES / 1e6:.0f} MB each)")
     print("[build] checks passed: no external URL outside the allow-list, no forbidden pattern")
 
 

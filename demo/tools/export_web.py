@@ -149,7 +149,7 @@ def main() -> None:
         "notes": args.note or NOTES,
     }
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=1))
-    print(f"[export] {args.out}: {len(forecasts)} forecasts, {n_files} layers, {n_bytes / 2**20:.1f} MB, "
+    print(f"[export] {args.out}: {len(forecasts)} forecasts, {n_files} layers, {n_bytes / 1e6:.1f} MB, "
           f"color scale {args.vmin:g} .. {manifest['display']['vmax']:g}", flush=True)
 
 

@@ -60,13 +60,13 @@ Basemap: `make_basemap.py --naturalearth <dir with ne_50m_*.geojson> --out demo/
 static host or storage bucket.
 
 - **Page:** about 1 MB, with Leaflet, the fonts and the basemap inlined.
-- **Data:** a risk layer is about 270 KB (174 to 376 KB for the seven dates), so a forecast date with 30
-  lead times is about 8 MB and the seven dates about 57 MB.
-- **Loading:** the first view loads the manifest, the observed fires and the layers it needs at once (the
-  chosen lead time, plus the first and last to pick the starting location); the date's other lead times load
-  right after, four at a time, for the risk curve.
+- **Data:** a risk layer is about 0.3 MB (0.17 to 0.38 MB for the seven dates), so a forecast date with 30
+  lead times is about 9 MB and the seven dates 63 MB.
+- **Loading:** the first view needs the page, the manifest, the observed fires and three layers (the chosen
+  lead time, plus the first and last to pick the starting location), about 1.4 MB; the date's other lead
+  times load right after, four at a time, for the risk curve, about 9.3 MB for the whole date.
 - **GitHub Pages limits** (GitHub docs, read 2026-11-04): 1 GB per published site, 1 GB recommended per
-  repository, a soft 100 GB per month of bandwidth. Daily live forecasts at about 8 MB a day should not
+  repository, a soft 100 GB per month of bandwidth. Daily live forecasts at about 9 MB a day should not
   pile up in a git repository; they belong with the service that makes them (see below).
 
 ## Data in: risk-map files

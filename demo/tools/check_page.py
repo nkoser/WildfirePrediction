@@ -83,8 +83,9 @@ def main() -> None:
             if scheme == "dark":
                 ctx.close()
                 continue
-            print(f"[check] first view: {first_view[0]} requests, {first_view[1] / 2**20:.1f} MB; "
-                  f"all lead times of {default}: {full[0]} requests, {full[1] / 2**20:.1f} MB", flush=True)
+            print(f"[check] finished when the first view was drawn: {first_view[0]} requests, {first_view[1] / 1e6:.1f} MB "
+                  f"(background loads included); all lead times of {default}: {full[0]} requests, "
+                  f"{full[1] / 1e6:.1f} MB", flush=True)
             expect(not page.locator("#error-note").is_visible(), "no error note")
             expect(curve_points(page) == n_taus[default],
                    f"curve has {n_taus[default]} points after loading ({curve_points(page)})")
