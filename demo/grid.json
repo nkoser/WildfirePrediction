@@ -1,0 +1,10 @@
+{
+  "crs": "EPSG:4326",
+  "width": 1968,
+  "height": 928,
+  "lon0": -141.00855014824128,
+  "lat0": 83.34569206060921,
+  "res": 0.04491576420597608,
+  "pixel_is_area": true,
+  "note": "lon0/lat0 are the outer corner of the top-left pixel. Source: ModelTiepoint and ModelPixelScale tags of the MPCFire Entire_Canada_Maps/MCD14A1 GeoTIFFs; matches RES and LAT_TOP in wildfire/tests/test_weights_geometry.py."
+}

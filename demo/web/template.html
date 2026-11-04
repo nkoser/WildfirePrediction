@@ -1,0 +1,54 @@
+<div class="app">
+  <main class="map-wrap">
+    <div id="map" class="map" aria-label="Map of the forecast fire risk. Click a location to see its risk curve."></div>
+    <p class="map-title" id="map-title" aria-live="polite"></p>
+    <div class="tip" id="tip" hidden></div>
+    <div class="legend" id="legend" role="group" aria-labelledby="legend-title">
+      <p class="legend-title" id="legend-title"></p>
+      <div class="ramp" id="ramp"></div>
+      <div class="ramp-ticks" id="ramp-ticks" aria-hidden="true"></div>
+      <label class="toggle" for="show-before"><input type="checkbox" id="show-before" checked><span class="sw sw-before" aria-hidden="true"></span><span>Fires in the 30 days before the forecast date, seen by the model</span></label>
+      <label class="toggle" for="show-after"><input type="checkbox" id="show-after" checked><span class="sw sw-after" aria-hidden="true"></span><span>Fires after the forecast date, within the lead time</span></label>
+      <p class="legend-foot"><span id="model-text"></span> Gray land lies outside the forecast area.</p>
+    </div>
+  </main>
+
+  <aside class="panel" aria-label="Forecast controls and details">
+    <header class="head">
+      <p class="eyebrow">Supplementary material · interactive results</p>
+      <h1>Wildfire Survival Explorer</h1>
+      <p class="lede">One forecast gives every pixel a full risk curve: the probability of its first fire within any number of days after the forecast date. The map reads that curve at the lead time you choose.</p>
+    </header>
+
+    <p class="note-warn" id="placeholder-note" hidden><span class="chip">Placeholder</span> Risk values in this build are a stand-in computed from past fires, not model output. The fires are real MODIS detections.</p>
+    <p class="note-error" id="error-note" hidden></p>
+
+    <section class="block" aria-labelledby="h-date">
+      <h2 id="h-date">Forecast date</h2>
+      <div class="dates" id="dates" role="group" aria-labelledby="h-date"></div>
+      <p class="sub" id="window-text"></p>
+    </section>
+
+    <section class="block" aria-labelledby="h-lead">
+      <h2 id="h-lead">Lead time</h2>
+      <p class="lead-readout"><span class="lead-num" id="lead-num"></span> <span class="lead-unit" id="lead-unit"></span></p>
+      <input type="range" id="lead" min="0" max="0" step="1" value="0" aria-labelledby="h-lead" aria-describedby="lead-text">
+      <div class="ticks" id="ticks" aria-hidden="true"></div>
+      <p class="sub" id="lead-text"></p>
+    </section>
+
+    <section class="block" aria-labelledby="h-loc">
+      <h2 id="h-loc">Selected location</h2>
+      <p class="loc" id="loc-name"></p>
+      <div class="curve" id="curve"></div>
+      <p class="sub" id="loc-outcome"></p>
+      <table class="vals" id="vals"></table>
+      <p class="sub hint">Click anywhere on the map to pick another location.</p>
+    </section>
+
+    <footer class="foot">
+      <ul id="notes"></ul>
+      <p class="credit">Basemap: Natural Earth.</p>
+    </footer>
+  </aside>
+</div>
