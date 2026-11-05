@@ -28,7 +28,7 @@
   --border-2: #bac5c9;
   --fire-before: #111111; /* fires in the input window, as in the paper */
   --fire-after: #1f5fbf;  /* fires after the forecast date, as in the paper */
-  --cloud: #7d8b92;       /* cloud-covered after the date: fire unknown (drawn translucent) */
+  --cloud: #5f7fa3;       /* cloud-covered after the date: fire unknown (drawn translucent, slate blue, unlike the gray outside land) */
   --focus: #01667b;
   --nav-hover: #80b9ff;   /* the lab's active navigation link */
   --focus-on-brand: #ffffff;
@@ -49,7 +49,7 @@
     --rule: #22383f; --brand: #01414e; --brand-2: #4aa9bd; --brand-ink: #ffffff; --brand-ink-2: #a9cbd3;
     --sel-bg: #4aa9bd; --sel-ink: #06171c;
     --title: #d9eaf6; --sea: #09161b; --land: #1b2a2f; --coast: #3a5058; --border: #6e838a; --border-2: #41575e;
-    --fire-before: #f5f5f5; --fire-after: #6aa8ff; --cloud: #a9b8bf; --focus: #6cc3d5;
+    --fire-before: #f5f5f5; --fire-after: #6aa8ff; --cloud: #8fa9c8; --focus: #6cc3d5;
     --warn-bg: #39300f; --warn-ink: #f1da8c; --err-bg: #3d1a16; --err-ink: #f4b8ae;
     --backdrop: rgb(0 0 0 / 0.6); --shadow: rgb(0 0 0 / 0.5);
     color-scheme: dark;
@@ -60,7 +60,7 @@
   --rule: #22383f; --brand: #01414e; --brand-2: #4aa9bd; --brand-ink: #ffffff; --brand-ink-2: #a9cbd3;
   --sel-bg: #4aa9bd; --sel-ink: #06171c;
   --title: #d9eaf6; --sea: #09161b; --land: #1b2a2f; --coast: #3a5058; --border: #6e838a; --border-2: #41575e;
-  --fire-before: #f5f5f5; --fire-after: #6aa8ff; --cloud: #a9b8bf; --focus: #6cc3d5;
+  --fire-before: #f5f5f5; --fire-after: #6aa8ff; --cloud: #8fa9c8; --focus: #6cc3d5;
   --warn-bg: #39300f; --warn-ink: #f1da8c; --err-bg: #3d1a16; --err-ink: #f4b8ae;
   --backdrop: rgb(0 0 0 / 0.6); --shadow: rgb(0 0 0 / 0.5);
   color-scheme: dark;
