@@ -140,6 +140,11 @@ def main() -> None:
         if "observed_through" in z.files:            # a live forecast: fires observed only up to a recent day
             entry.update(group="latest", observed_days=int(min(int(z["observed_days"]), max(taus))),
                          observed_through=str(z["observed_through"]))
+        if "unobserved_bits" in z.files:              # days each pixel was cloud-covered (Terra could not see a fire)
+            bits, nd = z["unobserved_bits"].astype(np.uint32), int(z["unobserved_days"])
+            entry["unobserved"] = [write(f"{folder}/unobserved-{b}.png", encode_png(((bits >> (8 * b)) & 255).astype(np.uint8)))
+                                   for b in range((min(nd, 32) + 7) // 8)]
+            entry["unobserved_days"] = nd
         forecasts.append(entry)
         print(f"[export] {path.name}: {date}, {len(taus)} lead times ({taus[0]} .. {taus[-1]})", flush=True)
 

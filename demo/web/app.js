@@ -157,7 +157,7 @@
     function readTheme() {
       colors.theme = effectiveTheme();
       const cs = getComputedStyle(document.documentElement);
-      for (const k of ['sea', 'land', 'coast', 'border', 'border-2', 'fire-before', 'fire-after', 'ink']) {
+      for (const k of ['sea', 'land', 'coast', 'border', 'border-2', 'fire-before', 'fire-after', 'cloud', 'ink']) {
         colors.css[k] = cs.getPropertyValue('--' + k).trim();
       }
       const stops = RAMPS[colors.theme].map(hexToRgb);
@@ -166,6 +166,8 @@
       for (let q = 1; q < 256; q++) colors.lut[q] = pack(rampColor(stops, tOfF(qToF(q))));
       colors.before = pack(hexToRgb(colors.css['fire-before']));
       colors.after = pack(hexToRgb(colors.css['fire-after']));
+      const cl = hexToRgb(colors.css.cloud);
+      colors.cloud = ((165 << 24) | (cl[2] << 16) | (cl[1] << 8) | cl[0]) >>> 0;   // translucent
     }
 
     // ---- layers -------------------------------------------------------------------------------------
@@ -270,12 +272,43 @@
           }
           e.winPyr = pyramid(win, false);
           e.firstPyr = pyramid(first, true);
-          e.obs = obs;
-        }, (err) => { e.obsP = null; throw err; });
+          e.first = first;
+          e.hid = {};
+          return Promise.all((e.fc.unobserved || []).map(decodeLayer)).then((layers) => {
+            if (layers.length) {
+              const bits = new Uint32Array(obs.length);
+              layers.forEach((l, b) => { for (let i = 0; i < l.length; i++) bits[i] |= l[i] << (8 * b); });
+              e.cloudBits = bits;
+            }
+            e.obs = obs;
+          });
+        }).catch((err) => { e.obsP = null; throw err; });
       }
       return e.obsP;
     }
     const pyrOf = (e, t) => e.pyr[t] || (e.pyr[t] = pyramid(e.raw[t], false));   // built when t is first drawn
+    function popcount(x) {
+      x -= (x >>> 1) & 0x55555555;
+      x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+      return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+    }
+    const cloudMask = (days) => (days >= 32 ? 0xffffffff : ((1 << days) >>> 0) - 1) >>> 0;
+    function cloudDays(e, idx, days) {   // days among the first `days` after the date when Terra could not see the ground
+      return e.cloudBits ? popcount((e.cloudBits[idx] & cloudMask(days)) >>> 0) : 0;
+    }
+    function hiddenPyr(e, t) {   // no fire seen within t days, but cloud-covered on most of the days with information
+      const days = Math.min(t, e.fc.unobserved_days || 0);
+      if (!e.cloudBits || days === 0) return null;
+      if (!e.hid[t]) {
+        const h = new Uint8Array(e.cloudBits.length), mask = cloudMask(days);
+        for (let i = 0; i < h.length; i++) {
+          if (e.first[i] <= t) continue;
+          if (2 * popcount((e.cloudBits[i] & mask) >>> 0) > days) h[i] = 1;
+        }
+        e.hid[t] = pyramid(h, false);
+      }
+      return e.hid[t];
+    }
     function loadRest(e) {   // every other lead time, nearest to the chosen one first, four at a time
       if (!e.rest) {
         const order = e.fc.taus.filter((t) => !e.raw[t])
@@ -301,6 +334,7 @@
       shownTau: null,     // the lead time on the map; trails `tau` while its layer loads
       before: true,
       after: true,
+      cloud: true,
       sel: null,          // {row, col}
       selRule: null,      // how the starting location was chosen; null once the reader picks one
       entry: null,        // the forecast on the map; trails `date` while its layers load
@@ -390,9 +424,10 @@
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, 256, 256);
       const e = state.entry, tau = state.shownTau;
-      if (!e || !e.obs || !e.raw[tau] || (!state.before && !state.after)) return;
+      if (!e || !e.obs || !e.raw[tau] || (!state.before && !state.after && !state.cloud)) return;
       const level = levelFor(coords.z);
       const win = e.winPyr[level], first = e.firstPyr[level];
+      const hp = state.cloud ? hiddenPyr(e, tau) : null, hid = hp && hp[level];
       const area = pyrOf(e, tau)[level];   // fires are drawn only where a forecast exists
       const { cols, rows, w } = tileIndex(coords, level);
       const img = ctx.createImageData(256, 256), px = new Uint32Array(img.data.buffer);
@@ -407,6 +442,7 @@
           if (!area[k]) continue;
           if (state.after && first[k] <= tau) px[o + i] = colors.after;          // after the date, drawn on top
           else if (state.before && win[k]) px[o + i] = colors.before;
+          else if (hid && hid[k]) px[o + i] = colors.cloud;
         }
       }
       ctx.putImageData(img, 0, 0);
@@ -452,7 +488,14 @@
       const parts = [];
       if (burning) parts.push(long ? `Fire detected in the ${manifest.input_days} days before the forecast date.` : 'Fire in the input window');
       if (d > 0) parts.push(long ? `First fire after the forecast date: day ${d}.` : `First fire after the date: day ${d}`);
-      else parts.push(long ? `No fire detected within ${n} days after the forecast date.` : `No fire in the ${n} days after the date`);
+      else if (n === 0) parts.push(long ? 'No observations after the forecast date yet.' : 'No observations after the date yet');
+      else parts.push(long ? `No fire detected within ${plural(n, 'day')} after the forecast date.` : `No fire in the ${plural(n, 'day')} after the date`);
+      const k = Math.min(n, e.fc.unobserved_days || 0);
+      if (e.cloudBits && k > 0 && d === 0) {
+        const c = cloudDays(e, idx, k);
+        if (c) parts.push(long ? `Cloud-covered on ${c} of the ${plural(k, 'day')} after the date, when a fire could not have been seen.`
+          : `Cloud-covered on ${c} of ${plural(k, 'day')}`);
+      }
       return parts;
     }
 
@@ -735,6 +778,8 @@
     }).observe($('curve'));
     $('show-before').addEventListener('change', (ev) => { state.before = ev.target.checked; fireLayer.repaint(); });
     $('show-after').addEventListener('change', (ev) => { state.after = ev.target.checked; fireLayer.repaint(); });
+    $('show-cloud').addEventListener('change', (ev) => { state.cloud = ev.target.checked; fireLayer.repaint(); });
+    $('cloud-toggle').hidden = !manifest.forecasts.some((f) => f.unobserved);
     darkQuery.addEventListener('change', applyTheme);
     new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 

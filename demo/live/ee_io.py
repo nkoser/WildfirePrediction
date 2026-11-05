@@ -32,7 +32,26 @@ def init() -> None:
     _ready = True
 
 
-def _request(image, grid: Grid, bands: list[str], tries: int = 8) -> np.ndarray:
+def retrying(call, tries: int = 12):
+    """Run an Earth Engine call, waiting and retrying while Earth Engine is busy or the project is throttled."""
+    import ee
+    for attempt in range(tries):
+        try:
+            return call()
+        except ee.EEException as e:
+            low = str(e).lower()
+            if attempt == tries - 1 or not any(s in low for s in ("too many", "concurrency", "429", "503", "500",
+                                                                  "timed out", "deadline", "internal error")):
+                raise
+            time.sleep(min(120, 5 * 2 ** attempt))
+
+
+def get_info(obj):
+    init()
+    return retrying(obj.getInfo)
+
+
+def _request(image, grid: Grid, bands: list[str], tries: int = 12) -> np.ndarray:
     import ee
     for attempt in range(tries):
         try:
@@ -41,7 +60,9 @@ def _request(image, grid: Grid, bands: list[str], tries: int = 8) -> np.ndarray:
             return np.stack([raw[b] for b in bands])
         except ee.EEException as e:
             msg = str(e)
-            retry = any(s in msg for s in ("Too many", "429", "503", "500", "timed out", "deadline", "Internal error"))
+            low = msg.lower()
+            retry = any(s in low for s in ("too many", "concurrency", "429", "503", "500", "timed out", "deadline",
+                                           "internal error"))
             if not retry or attempt == tries - 1:
                 raise
             time.sleep(min(120, 5 * 2 ** attempt))
@@ -62,7 +83,7 @@ def pixels(image, grid: Grid, bands: list[str], bytes_per_value: int = 4, worker
     cells = int(MAX_REQUEST_BYTES // (len(bands) * (bytes_per_value + 1) * 1.2))
     if max_cells:
         cells = min(cells, max_cells)
-    bw = min(grid.width, max(1, cells))
+    bw = min(grid.width, max(1, int(cells ** 0.5) if max_cells else cells))   # capped: square tiles
     bh = min(grid.height, max(1, cells // bw))
     blocks = [(r0, min(grid.height, r0 + bh), c0, min(grid.width, c0 + bw))
               for r0 in range(0, grid.height, bh) for c0 in range(0, grid.width, bw)]

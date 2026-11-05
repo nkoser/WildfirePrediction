@@ -48,7 +48,15 @@ class Grid:
         return Grid(self.x0 + c0 * self.res, self.y0 - r0 * self.res, self.res, w, h)
 
 
-RELEASE = Grid(x0=-15697 * R1, y0=9278 * R1, res=5 * R1, width=1968, height=928)
+import os
+
+# LIVE_REGION picks the grid. "canada" is MPCFire's release grid; "europe" is the same pixel size on the same 1 km
+# grid over Europe (11 W to 35 E, 34 to 71.5 N), without MPCFire's download-tile offsets.
+REGION = os.environ.get("LIVE_REGION", "canada")
+REGIONS = {"canada": Grid(x0=-15697 * R1, y0=9278 * R1, res=5 * R1, width=1968, height=928),
+           "europe": Grid(x0=-1225 * R1, y0=7960 * R1, res=5 * R1, width=1025, height=835)}
+RELEASE = REGIONS[REGION]
+TILED = REGION == "canada"       # MPCFire's 2 x 2 download tiles shifted Canada's 1 km blocks per quarter
 ONE_KM = Grid(x0=RELEASE.x0, y0=RELEASE.y0, res=R1, width=RELEASE.width * 5, height=RELEASE.height * 5)
 
 

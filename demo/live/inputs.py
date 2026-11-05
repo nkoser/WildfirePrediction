@@ -24,17 +24,19 @@ import numpy as np
 
 from . import ee_io
 from .encode import RANGES, encode, to_uint8
-from .grid import ERA5, ONE_KM, R1, RELEASE, Grid
+from .grid import ERA5, ONE_KM, R1, RELEASE, TILED, Grid
 
 CACHE = Path(os.environ.get("LIVE_CACHE", "live-cache"))
+if os.environ.get("LIVE_REGION", "canada") != "canada":
+    CACHE = CACHE / os.environ["LIVE_REGION"]
 
 # MPCFire downloaded Canada as 2 x 2 tiles and cut each from its own corner, so a 1 km-based channel's release
 # pixel (I, J) holds the 1 km block that starts at (5I + dy, 5J + dx), with (dy, dx) set by the tile. Measured on
 # every 2025 fire-season day of released fire pixels (demo/live/README.md, "Alignment"): rows from 465 on follow
 # the south tiles, columns from 984 on the east tiles; column 983 holds what either tile saw (the union).
-COL_SEAM = 984          # first release column of the east tiles
-ROW_SEAM = 465          # first release row of the south tiles
-SEAM_COL_UNION = 983    # the column at the seam: maximum of the west and the east tiles' blocks
+COL_SEAM = 984 if TILED else RELEASE.width          # first release column of the east tiles
+ROW_SEAM = 465 if TILED else RELEASE.height         # first release row of the south tiles
+SEAM_COL_UNION = 983 if TILED else None             # the seam column: maximum of the west and east tiles' blocks
 DX_EAST, DY_SOUTH = -1, -2
 
 ERA5_BANDS = ["temperature_2m", "u_component_of_wind_10m", "v_component_of_wind_10m", "snow_cover",
@@ -72,7 +74,7 @@ def tile_offsets() -> tuple[np.ndarray, np.ndarray]:
 def has_image(collection: str, day: str) -> bool:
     import ee
     ee_io.init()
-    return ee.ImageCollection(collection).filterDate(day, next_day(day)).size().getInfo() > 0
+    return ee_io.get_info(ee.ImageCollection(collection).filterDate(day, next_day(day)).size()) > 0
 
 
 # ---- fire: MOD14A1 FireMask == 9, Terra only (MPCFire's combine step paired Terra with itself) -------------------
@@ -98,14 +100,36 @@ def blocks_max(f1: np.ndarray) -> np.ndarray:
     cols = MARGIN + 5 * np.arange(RELEASE.width)[:, None] + dx[:, None] + np.arange(5)[None, :]
     a = f1[rows].max(axis=1)                     # (H, W1k + margins)
     out = a[:, cols].max(axis=2)                 # (H, W)
-    j = SEAM_COL_UNION                           # the seam column: west block and east block together
-    east = MARGIN + 5 * j + DX_EAST + np.arange(5)
-    out[:, j] = np.maximum(out[:, j], a[:, east].max(axis=1))
+    if SEAM_COL_UNION is not None:               # the seam column: west block and east block together
+        j = SEAM_COL_UNION
+        east = MARGIN + 5 * j + DX_EAST + np.arange(5)
+        out[:, j] = np.maximum(out[:, j], a[:, east].max(axis=1))
     return out
 
 
 def fire(day: str) -> np.ndarray:
     return blocks_max(fire_1km(day))[None].astype(np.uint8)
+
+
+def unobserved(day: str) -> np.ndarray:
+    """(H, W) bool: the day's MOD14A1 (Terra) could not have seen a fire in the release pixel: at least half of its
+    1 km pixels are cloud or not processed (FireMask 0, 1, 2, 4 or 6) and none is a fire (9). For the map's
+    "cloud-covered, fire unknown" class; not a model input."""
+    def make():
+        import ee
+        col = ee.ImageCollection("MODIS/061/MOD14A1").filterDate(day, next_day(day)).select("FireMask")
+        fm = ee.Image(ee.Algorithms.If(col.size().gt(0), col.mosaic(), ee.Image.constant(0).rename("FireMask")))
+        fm = fm.unmask(0)
+        blind = fm.lte(2).Or(fm.eq(4)).Or(fm.eq(6)).toFloat()
+        fire = fm.eq(9).toFloat()
+        one_km = dict(crs="EPSG:4326", crsTransform=[R1, 0, 0, 0, -R1, 0])
+        to_release = dict(crs="EPSG:4326", crsTransform=[RELEASE.res, 0, RELEASE.x0, 0, -RELEASE.res, RELEASE.y0])
+        img = ee.Image.cat(blind.reproject(**one_km).reduceResolution(ee.Reducer.mean(), maxPixels=64).reproject(**to_release),
+                           fire.reproject(**one_km).reduceResolution(ee.Reducer.max(), maxPixels=64).reproject(**to_release)
+                           ).rename(["blind", "fire"])
+        a = ee_io.pixels(img, RELEASE, ["blind", "fire"], 4, max_cells=512 * 512)
+        return ((a[0] >= 0.5) & (a[1] == 0)).astype(np.uint8)
+    return cached("MOD14A1_unobserved", day, make) > 0
 
 
 FIRMS_7D = "https://firms.modaps.eosdis.nasa.gov/data/active_fire/modis-c6.1/csv/MODIS_C6_1_Canada_7d.csv"
@@ -139,7 +163,16 @@ SUM_BANDS = {"total_precipitation_sum": "total_precipitation", "surface_latent_h
 MAX_BANDS = {"temperature_2m_max": "temperature_2m", "skin_temperature_max": "skin_temperature"}
 
 
+WEATHER_END = os.environ.get("LIVE_WEATHER_END")   # after this day, weather repeats its last day (persistence)
+
+
 def era5_raw(day: str) -> np.ndarray:
+    if WEATHER_END and day > WEATHER_END:
+        return _era5_raw(WEATHER_END)
+    return _era5_raw(day)
+
+
+def _era5_raw(day: str) -> np.ndarray:
     """(18, ...) ERA5-Land daily values on the 0.1-degree grid as MPCFire downloaded them, float64, masked pixels
     (ocean) as 0, all from Earth Engine's ERA5_LAND/HOURLY.
 
@@ -177,7 +210,7 @@ def era5_available(day: str) -> bool:
     import ee
     ee_io.init()
     prev = (dt.date.fromisoformat(day) - dt.timedelta(days=1)).isoformat()
-    return ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").filterDate(f"{prev}T23:00:00", next_day(day)).size().getInfo() == 25
+    return ee_io.get_info(ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").filterDate(f"{prev}T23:00:00", next_day(day)).size()) == 25
 
 
 def to_release(arr: np.ndarray, src: Grid, nodata: float = -32768.0) -> np.ndarray:

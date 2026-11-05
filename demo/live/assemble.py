@@ -55,6 +55,7 @@ def main() -> None:
     ap.add_argument("--released-from", type=Path, nargs="*", default=[],
                     help="experiment roots whose cubes give the modalities that are not rebuilt")
     ap.add_argument("--fwi-from", help="day whose released FWI codes start the FWI recursion (default: --start)")
+    ap.add_argument("--fwi-cold-start", help="start the FWI recursion on this day from FireMPC's initial values instead")
     ap.add_argument("--static-from", type=Path, help="stat_<year>.npy to copy (default: the newest in --released-from)")
     ap.add_argument("--inputs-end", help="last day with model inputs; later days carry only the fire channel, for "
                     "the fires observed after the forecast dates")
@@ -82,7 +83,8 @@ def main() -> None:
     (root / "data_manifests").mkdir(parents=True, exist_ok=True)
     (root / "derived_data" / "events").mkdir(parents=True, exist_ok=True)
     (root / "derived_data" / "cube").mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(args.main / "data_manifests" / "d0_masks.json", root / "data_manifests" / "d0_masks.json")
+    if not (root / "data_manifests" / "d0_masks.json").exists():   # a region's own masks (statics.py) stay
+        shutil.copyfile(args.main / "data_manifests" / "d0_masks.json", root / "data_manifests" / "d0_masks.json")
     if not (root / "derived_data" / "masks").exists():
         (root / "derived_data" / "masks").symlink_to(args.main / "derived_data" / "masks")
     np.savez(root / "derived_data" / "events" / "fire_index.npz", dates=np.array(days))
@@ -90,7 +92,11 @@ def main() -> None:
     H, W = inputs.RELEASE.height, inputs.RELEASE.width
     per_year = {}
     fwi_state = None
-    if "FWI" in rebuilt:
+    if "FWI" in rebuilt and args.fwi_cold_start:
+        shape = (inputs.ERA5.height, inputs.ERA5.width)
+        fwi_state = tuple(np.full(shape, v, np.float32) for v in (inputs.FFMC_INIT, inputs.DMC_INIT, inputs.DC_INIT))
+        fwi_day = (dt.date.fromisoformat(args.fwi_cold_start) - dt.timedelta(days=1)).isoformat()
+    elif "FWI" in rebuilt:
         start = args.fwi_from or args.start
         if not readers:
             from wildfire.data.dataset import CubeReader
@@ -130,7 +136,10 @@ def main() -> None:
                 elif mod in series:
                     arr = series[mod][day]
                 elif mod in rebuilt:
-                    arr = {"MCD14A1": inputs.fire, "ERA5": inputs.era5, "VPD": inputs.vpd}[mod](day)
+                    if mod == "MCD14A1" and not inputs.has_image("MODIS/061/MOD14A1", day):
+                        arr = inputs.fire_nrt(day, args.firms)          # newest days: FIRMS near-real-time
+                    else:
+                        arr = {"MCD14A1": inputs.fire, "ERA5": inputs.era5, "VPD": inputs.vpd}[mod](day)
                 else:
                     arr = released(day, mod)
                 dyn[t, :, :, s] = np.moveaxis(arr, 0, -1)

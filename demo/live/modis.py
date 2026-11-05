@@ -24,7 +24,8 @@ from .encode import encode
 from .grid import ONE_KM, R1, RELEASE
 from .inputs import CACHE, cached, next_day
 
-ROW_SEAM, COL_SEAM = 465, 984
+from .grid import TILED
+ROW_SEAM, COL_SEAM = (465, 984) if TILED else (RELEASE.height, RELEASE.width)
 FOOT = {"north": 0, "south": 2, "west": 0, "east": -1}
 MARGIN = 8                       # 1 km pixels around the release grid: windows reach 5 back and 6 forward
 ONE_KM_TRANSFORM = [R1, 0, 0, 0, -R1, 0]
@@ -237,7 +238,8 @@ def mcd15a3h_series(days: list[str], lookback: int = 40) -> dict[str, np.ndarray
     ee_io.init()
     d0 = (dt.date.fromisoformat(min(days)) - dt.timedelta(days=lookback)).isoformat()
     starts = ee.ImageCollection("MODIS/061/MCD15A3H").filterDate(d0, next_day(max(days))) \
-        .aggregate_array("system:time_start").getInfo()
+        .aggregate_array("system:time_start")
+    starts = ee_io.get_info(starts)
     starts = sorted(dt.datetime.utcfromtimestamp(t / 1000).date().isoformat() for t in starts)
     state, out, k = None, {}, 0
     for day in sorted(days):
