@@ -66,7 +66,23 @@
     window.__wfReady = true;
   }
 
-  const manifestUrl = new URL(document.querySelector('.app').dataset.manifest, document.baseURI);
+  // regions (build.py lists them): the one named in the address (#europe) or the first; switching reloads the page
+  const appEl = document.querySelector('.app');
+  const regions = JSON.parse(appEl.dataset.regions || '[]');
+  const region = regions.find((r) => r.id === location.hash.slice(1)) || regions[0];
+  const manifestUrl = new URL(region ? region.manifest : appEl.dataset.manifest, document.baseURI);
+  if (regions.length > 1) {
+    const box = $('regions');
+    for (const r of regions) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'region-btn'; b.textContent = r.label;
+      b.setAttribute('aria-pressed', String(r === region));
+      b.addEventListener('click', () => { if (r !== region) { location.hash = r.id; } });
+      box.append(b);
+    }
+    box.hidden = false;
+    window.addEventListener('hashchange', () => location.reload());
+  }
   fetch(manifestUrl, { cache: 'no-cache' })
     .then((r) => {
       if (!r.ok) throw new Error(`the forecast index was not found (HTTP ${r.status})`);

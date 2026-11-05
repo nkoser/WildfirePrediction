@@ -47,8 +47,9 @@ SCHEMA = "wildfire-demo/2"
 NOTES = [
     "Dates from 2023 to 2025 fall in the held-out test years; the model was trained on 2000 to 2019.",
     "Latest forecasts are made from inputs rebuilt from Google Earth Engine (ERA5-Land, MODIS) with MPCFire's "
-    "processing, checked against MPCFire's released 2025 data. Weather data arrives about five days late, so the "
-    "newest forecast date is about five days old, and fires after a date are known only up to the day shown.",
+    "processing, checked against MPCFire's released 2025 data. Weather data (ERA5-Land) arrives about five days "
+    "late, so its last day is repeated up to the forecast date; on a past date this changed the forecast very "
+    "little. Fires after a date are known only up to the day shown.",
     "Late-October dates lie outside the fire season the model was trained on (May to September).",
     "Probabilities are the model's raw outputs, without calibration.",
     "Fires are MODIS active-fire detections (MCD14A1, Terra, high confidence) on the same grid of about 5 km; for "
@@ -75,6 +76,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("npz", type=Path, nargs="+")
     ap.add_argument("--out", type=Path, required=True, help="data directory to write (manifest.json and layers)")
+    ap.add_argument("--grid", type=Path, help="grid of the files (default: demo/grid.json, Canada)")
+    ap.add_argument("--region", default="Canada", help="region name shown on the page")
     ap.add_argument("--overwrite", action="store_true", help="replace an earlier export in --out")
     ap.add_argument("--model-id", default="contagion-sts")
     ap.add_argument("--model-label", default="Contagion-STS")
@@ -87,7 +90,7 @@ def main() -> None:
     ap.add_argument("--default-tau", type=int, default=7, help="lead time the page opens on (the draft figure's)")
     args = ap.parse_args()
     keep_taus = [int(t) for t in args.taus.split(",")] if args.taus else None
-    g = load_grid()
+    g = load_grid(args.grid)
     shape = (g["height"], g["width"])
     prepare_out(args.out, args.overwrite)
 
@@ -157,6 +160,7 @@ def main() -> None:
         "quant": QUANT,
         "display": {"scale": "log10", "vmin": args.vmin, "vmax": nice_up(max(tops))},
         "input_days": 30,
+        "region": args.region,
         "default": {"date": args.default_date, "tau": args.default_tau},
         "models": [model],
         "forecasts": forecasts,

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
+import json
 import re
 import shutil
 from pathlib import Path
@@ -116,6 +118,16 @@ def main() -> None:
     if body.count("{{paper_links}}") != 1:
         raise SystemExit("template.html must hold the {{paper_links}} slot once")
     body = body.replace("{{paper_links}}", paper_links(args.arxiv))
+    # regions: data/manifest.json (the first) and any data/<region>/manifest.json, switched on the page
+    regions = []
+    for m in [args.data / "manifest.json"] + sorted(args.data.glob("*/manifest.json")):
+        rel = m.relative_to(args.data).as_posix()
+        label = json.loads(m.read_text()).get("region", "Canada")
+        regions.append({"id": label.lower().replace(" ", "-"), "label": label, "manifest": f"data/{rel}"})
+    attr = html.escape(json.dumps(regions), quote=True)
+    if body.count('data-manifest="data/manifest.json"') != 1:
+        raise SystemExit("template.html must name data/manifest.json once")
+    body = body.replace('data-manifest="data/manifest.json"', f'data-manifest="data/manifest.json" data-regions="{attr}"')
     scripts = "\n".join([
         json_script("wf-basemap", args.basemap.read_text()),
         "<script>" + (DEMO / "vendor" / "leaflet-1.9.4" / "leaflet.js").read_text() + "</script>",
@@ -135,7 +147,8 @@ def main() -> None:
                 f"<body>\n{body}\n{scripts}\n</body>\n</html>\n")
 
     allowed = ALLOWED_URLS | ({args.arxiv} if args.arxiv else set())
-    problems = check({"page": document, "manifest": manifest.read_text()}, FORBIDDEN + args.forbid, allowed)
+    problems = check({"page": document, **{str(m): m.read_text() for m in [manifest] + sorted(args.data.glob("*/manifest.json"))}},
+                     FORBIDDEN + args.forbid, allowed)
     if problems:
         raise SystemExit("build check failed:\n  " + "\n  ".join(problems))
 

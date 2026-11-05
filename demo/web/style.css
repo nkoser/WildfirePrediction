@@ -161,6 +161,14 @@ h2 { margin: 0 0 8px; color: var(--ink); font: 700 14px/1.3 var(--font-body); }
   font: 700 10.5px/17px var(--font-body); text-transform: uppercase; letter-spacing: 0.06em;
 }
 
+.regions { display: flex; gap: 0; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
+.region-btn {
+  flex: 1 1 0; padding: 7px 10px; border: 0; background: var(--surface); color: var(--ink-2);
+  font: 600 13px/1.2 var(--font-body); cursor: pointer;
+}
+.region-btn + .region-btn { border-left: 1px solid var(--rule); }
+.region-btn:hover { background: var(--surface-2); color: var(--ink); }
+.region-btn[aria-pressed="true"] { background: var(--sel-bg); color: var(--sel-ink); }
 .dates { display: flex; flex-direction: column; gap: 6px; }
 .date-row { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: start; gap: 8px; }
 .date-year { padding-top: 6px; color: var(--ink-3); font: 600 12px/1.2 var(--font-body); font-variant-numeric: tabular-nums; }
