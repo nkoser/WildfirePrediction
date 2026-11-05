@@ -20,7 +20,8 @@ Manifest fields:
     display      color-scale range (vmin 1e-4 as in the paper's figure; vmax = 99.9th percentile of F at
                  the largest tau, maximum over forecasts, the figure's rule applied to all dates at once)
     models       id, label, detail
-    forecasts    per model and date: taus, risk[tau] (path), observed (path), observed_days
+    forecasts    per model and date: taus, risk[tau] (path), observed (path), observed_days; live forecasts
+                 add group "latest" and observed_through (fires are known only up to that day)
     default      date and lead time the page opens on
     notes        footnotes shown on the page
 
@@ -44,9 +45,14 @@ from common import QUANT, encode_png, load_grid, quantize_log  # noqa: E402
 
 SCHEMA = "wildfire-demo/2"
 NOTES = [
-    "Forecast dates fall in the held-out test years 2023 to 2025. The model was trained on 2000 to 2019.",
+    "Dates from 2023 to 2025 fall in the held-out test years; the model was trained on 2000 to 2019.",
+    "Latest forecasts are made from inputs rebuilt from Google Earth Engine (ERA5-Land, MODIS) with MPCFire's "
+    "processing, checked against MPCFire's released 2025 data. Weather data arrives about five days late, so the "
+    "newest forecast date is about five days old, and fires after a date are known only up to the day shown.",
+    "Late-October dates lie outside the fire season the model was trained on (May to September).",
     "Probabilities are the model's raw outputs, without calibration.",
-    "Fires are MODIS active-fire detections (MCD14A1) on the same grid of about 5 km.",
+    "Fires are MODIS active-fire detections (MCD14A1, Terra, high confidence) on the same grid of about 5 km; for "
+    "the newest days, NASA FIRMS near-real-time detections of the same satellite.",
 ]
 
 
@@ -129,9 +135,12 @@ def main() -> None:
         if first.max() > 127:
             raise SystemExit(f"{path.name}: first_fire reaches {first.max()}, the encoding holds 0..127")
         observed = ((z["fire_window"].astype(np.uint8) << 7) | first.astype(np.uint8)).astype(np.uint8)
-        forecasts.append({"model": model["id"], "date": date, "taus": taus, "risk": risk,
-                          "observed": write(f"{folder}/observed.png", encode_png(observed)),
-                          "observed_days": max(taus)})
+        entry = {"model": model["id"], "date": date, "taus": taus, "risk": risk,
+                 "observed": write(f"{folder}/observed.png", encode_png(observed)), "observed_days": max(taus)}
+        if "observed_through" in z.files:            # a live forecast: fires observed only up to a recent day
+            entry.update(group="latest", observed_days=int(min(int(z["observed_days"]), max(taus))),
+                         observed_through=str(z["observed_through"]))
+        forecasts.append(entry)
         print(f"[export] {path.name}: {date}, {len(taus)} lead times ({taus[0]} .. {taus[-1]})", flush=True)
 
     if not forecasts:

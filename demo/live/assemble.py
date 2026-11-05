@@ -27,7 +27,8 @@ from . import inputs
 DYNAMIC = [("MCD14A1", 1), ("ERA5", 18), ("FWI", 6), ("VPD", 1), ("NDVI_EVI", 2), ("MCD15A3H", 2),
            ("MCD09GA", 4), ("MCD11A1", 4), ("MCD09CMG", 4)]
 N_DYN, N_STAT = 42, 13
-BUILDERS = {"fire": "MCD14A1", "ERA5": "ERA5", "VPD": "VPD", "FWI": "FWI"}
+BUILDERS = {"fire": "MCD14A1", "ERA5": "ERA5", "VPD": "VPD", "FWI": "FWI", "MCD11A1": "MCD11A1",
+            "MCD09GA": "MCD09GA", "NDVI_EVI": "NDVI_EVI", "MCD09CMG": "MCD09CMG", "MCD15A3H": "MCD15A3H"}
 
 
 def slices() -> dict[str, slice]:
@@ -55,9 +56,13 @@ def main() -> None:
                     help="experiment roots whose cubes give the modalities that are not rebuilt")
     ap.add_argument("--fwi-from", help="day whose released FWI codes start the FWI recursion (default: --start)")
     ap.add_argument("--static-from", type=Path, help="stat_<year>.npy to copy (default: the newest in --released-from)")
+    ap.add_argument("--inputs-end", help="last day with model inputs; later days carry only the fire channel, for "
+                    "the fires observed after the forecast dates")
+    ap.add_argument("--firms", type=Path, help="FIRMS MODIS CSV for fire days Earth Engine's MOD14A1 does not have yet")
     args = ap.parse_args()
 
     days = days_between(args.start, args.end)
+    input_days = [d for d in days if not args.inputs_end or d <= args.inputs_end]
     sl = slices()
     rebuilt = {BUILDERS[m] for m in args.rebuild}
     readers = []
@@ -92,11 +97,29 @@ def main() -> None:
             readers = [CubeReader(r) for r in args.released_from]
         fwi_state = inputs.fwi_state_from_release(released(start, "FWI"))
         fwi_day = start
+    series = {}                                 # MODIS modalities: whole series at once (temporal fill)
+    if rebuilt & {"MCD11A1", "MCD09GA", "NDVI_EVI", "MCD09CMG", "MCD15A3H"}:
+        from . import modis
+        if "MCD11A1" in rebuilt:
+            series["MCD11A1"] = modis.series("MCD11A1", input_days)
+        if rebuilt & {"MCD09GA", "NDVI_EVI"}:
+            ga = modis.series("MCD09GA", input_days)
+            series["MCD09GA"] = ga
+            series["NDVI_EVI"] = {d: modis.ndvi_evi(c) for d, c in ga.items()}
+        if "MCD09CMG" in rebuilt:
+            series["MCD09CMG"] = modis.mcd09cmg_series(input_days)
+        if "MCD15A3H" in rebuilt:
+            series["MCD15A3H"] = modis.mcd15a3h_series(input_days)
     for year in sorted({d[:4] for d in days}):
         ydays = [d for d in days if d[:4] == year]
         path = root / "derived_data" / "cube" / f"dyn_{year}.mmap"
         dyn = np.memmap(path, dtype=np.uint8, mode="w+", shape=(len(ydays), H, W, N_DYN))
         for t, day in enumerate(ydays):
+            if args.inputs_end and day > args.inputs_end:          # only the observed fires
+                fire = inputs.fire(day) if inputs.has_image("MODIS/061/MOD14A1", day) else inputs.fire_nrt(day, args.firms)
+                dyn[t, :, :, sl["MCD14A1"]] = np.moveaxis(fire, 0, -1)
+                print(f"[assemble] {day}: fire only", flush=True)
+                continue
             for mod, s in sl.items():
                 if mod == "FWI" and fwi_state is not None:
                     comp = None
@@ -104,6 +127,8 @@ def main() -> None:
                         fwi_day = inputs.next_day(fwi_day)
                         fwi_state, comp = inputs.fwi_step(fwi_state, fwi_day)
                     arr = inputs.fwi_encode(comp) if comp is not None else released(day, "FWI")
+                elif mod in series:
+                    arr = series[mod][day]
                 elif mod in rebuilt:
                     arr = {"MCD14A1": inputs.fire, "ERA5": inputs.era5, "VPD": inputs.vpd}[mod](day)
                 else:

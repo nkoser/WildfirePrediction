@@ -161,7 +161,7 @@ h2 { margin: 0 0 8px; color: var(--ink); font: 700 14px/1.3 var(--font-body); }
 }
 
 .dates { display: flex; flex-direction: column; gap: 6px; }
-.date-row { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: start; gap: 8px; }
+.date-row { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: start; gap: 8px; }
 .date-year { padding-top: 6px; color: var(--ink-3); font: 600 12px/1.2 var(--font-body); font-variant-numeric: tabular-nums; }
 .date-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .date-btn {

@@ -6,8 +6,9 @@ of the FireMPC code (github.com/SynUW/FireMPC), as it was run, and checks every 
 2025 rasters. The choices the code leaves open (arguments that were not recorded, a missing shapefile, Earth
 Engine behavior) were measured against those rasters.
 
-Status as of 2026-11-05: the fire channel, ERA5-Land (18 bands) and VPD are rebuilt; FWI is close; the MODIS
-surface channels are being calibrated.
+Status as of 2026-11-05: the fire channel, ERA5-Land (18 bands) and VPD are rebuilt exactly; FWI is close; the MODIS
+surface channels are approximate (simple rules, not calibrated to the code). The model does not notice the
+difference beyond the acceptance thresholds (below), and the demo shows seven forecasts of 2026-10-24 .. 10-30.
 
 ## Modules
 
@@ -36,7 +37,10 @@ Fidelity: share of Canadian land pixels whose rebuilt code equals the released o
 | VPD (1) | Tetens from daily mean T2m and dewpoint on the 0.1-degree grid, values outside the valid ranges interpolated within 3 pixels (scipy griddata), bilinear | 99.9 % |
 | FWI (6) | FireMPC's own recursion (its equations, deviations from Van Wagner included), every day of the year with state carried over, on the 0.1-degree grid; started from the released codes of a day | FFMC 41-47 %, DMC 45-73 %, DC 35-40 %, ISI 67-86 %, BUI 44-69 %, FWI 69-92 % exact and 70-97 % within one code over 2025-06-15 .. 10-25 with the earlier sums; to be re-measured with the exact sums |
 | NDVI/EVI (2) | from the uint8 MCD09GA codes divided by 255 (MPCFire's route), then encoded | 98 % / 99.9 % exact from the released MCD09GA codes |
-| MCD11A1, MCD09GA, MCD09CMG, MCD15A3H | QA mask, Terra/Aqua choice, temporal fill (last valid value), 10 x 10 window mean of 1 km pixels | in calibration |
+| MCD11A1 (4) | day-QC key chooses Terra or Aqua for all bands; LST_Day masked by day QC, emissivities by day or night QC; temporal fill from a 60-day spin-up; 10 x 10 window means at the measured offsets | 89 % / 75 % / 84 % / 82 % exact (one region, 10 days) |
+| MCD09GA (4) | cloudy pixels dropped, QC key chooses the sensor, negative reflectance as no data, temporal fill, 10 x 10 windows | approximate: 4-15 % exact, mean 4-10 codes off (MPCFire's exact rule not found) |
+| MCD09CMG (4) | Terra where valid else Aqua, temporal fill, bilinear from the 5600 m grid | not measured |
+| MCD15A3H (2) | QA (SCF_QC <= 3), newest 4-day composite averaged onto each release pixel | not measured |
 
 ## Alignment
 
@@ -64,3 +68,17 @@ log10 F| <= 0.10 and |delta AUC| <= 0.01 against the fires observed afterwards.
 ERA5-Land hourly through 2026-10-30 (DAILY_AGGR only through 10-26, which is why the hourly data is used), MOD14A1
 through 10-31, MOD09GA, MOD11A1 and MOD09CMG through 11-03, MCD15A3H composites through 10-28. The newest forecast
 date with every input is about five days old.
+
+## Results (2026-11-05)
+
+Risk maps from rebuilt vs released inputs (`compare_maps.py`):
+
+| rebuilt | date | Spearman (tau 1, 7, 30) | median abs delta log10 F | delta AUC (7, 30) |
+|---|---|---|---|---|
+| fire, ERA5, VPD, FWI (MODIS released) | 2025-05-28 | 0.9996, 0.9999, 0.9999 | 0.000 | 0.0000, +0.0001 |
+| fire, ERA5, VPD, FWI (MODIS released) | 2025-07-15 | 0.9998, 0.9999, 1.0000 | 0.000-0.001 | 0.0000, 0.0000 |
+| everything | 2025-10-26 | 0.976, 0.984, 0.989 | 0.06-0.07 (p95 0.3) | -0.002, -0.002 |
+
+The off-season reference (the model on MPCFire's own inputs of 2025-10-20 .. 26) ranks the fires that followed with
+AUC 0.95-0.97 at 7 and 30 days, close to its in-season skill. The live forecasts of 2026-10-24 .. 30 rank the fires
+observed since (5-11 days, through 2026-11-04) with AUC 0.96-0.97.

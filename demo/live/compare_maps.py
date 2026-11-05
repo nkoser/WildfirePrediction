@@ -49,7 +49,8 @@ def main() -> None:
         keep = m & ~a["fire_window"]
         lab = (a["first_fire"] > 0) & (a["first_fire"] <= t)
         auc_a, auc_b = auc(fa[keep], lab[keep]), auc(fb[keep], lab[keep])
-        ok = rho >= SPEARMAN_MIN and np.median(d) <= MEDIAN_DLOG_MAX and abs(auc_a - auc_b) <= DAUC_MAX
+        no_fires = not np.isfinite(auc_a)          # no fire within tau: the AUC criterion does not apply
+        ok = rho >= SPEARMAN_MIN and np.median(d) <= MEDIAN_DLOG_MAX and (no_fires or abs(auc_a - auc_b) <= DAUC_MAX)
         ok_all &= ok
         print(f"  tau {t:2d}: Spearman {rho:.4f}, |dlog10 F| median {np.median(d):.3f} p95 {np.percentile(d, 95):.3f}, "
               f"AUC released {auc_a:.4f} rebuilt {auc_b:.4f} (d {auc_b - auc_a:+.4f}), "

@@ -493,8 +493,10 @@
       box.replaceChildren();
       let chips = null, year = null;
       for (const d of datesFor(state.model)) {
-        if (d.slice(0, 4) !== year) {
-          year = d.slice(0, 4);
+        const latest = forecastFor(state.model, d).group === 'latest';
+        const label = latest ? 'Latest' : d.slice(0, 4);
+        if (label !== year) {
+          year = label;
           chips = el('div', { class: 'date-chips' });
           const row = el('div', { class: 'date-row' });
           row.append(el('span', { class: 'date-year', 'aria-hidden': 'true' }, year), chips);
@@ -507,7 +509,8 @@
       }
       const fc = fcNow();
       $('window-text').textContent =
-        `Model input: the ${manifest.input_days} days from ${fmtDate(addDays(fc.date, 1 - manifest.input_days), { year: undefined })} to ${fmtDate(fc.date)}.`;
+        `Model input: the ${manifest.input_days} days from ${fmtDate(addDays(fc.date, 1 - manifest.input_days), { year: undefined })} to ${fmtDate(fc.date)}.`
+        + (fc.observed_through ? ` Fires observed through ${fmtDate(fc.observed_through)} so far.` : '');
     }
     function renderLead() {
       const fc = fcNow(), tau = state.tau, slider = $('lead'), n = fc.taus.length;
