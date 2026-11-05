@@ -123,7 +123,8 @@ def main() -> None:
     for m in [args.data / "manifest.json"] + sorted(args.data.glob("*/manifest.json")):
         rel = m.relative_to(args.data).as_posix()
         label = json.loads(m.read_text()).get("region", "Canada")
-        regions.append({"id": label.lower().replace(" ", "-"), "label": label, "manifest": f"data/{rel}"})
+        regions.append({"id": re.sub(r"[^a-z]+", "-", label.lower()).strip("-").split("-")[0], "label": label,
+                        "manifest": f"data/{rel}"})
     attr = html.escape(json.dumps(regions), quote=True)
     if body.count('data-manifest="data/manifest.json"') != 1:
         raise SystemExit("template.html must name data/manifest.json once")

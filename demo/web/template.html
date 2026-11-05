@@ -4,6 +4,7 @@
       <h1 class="brand-title">Wildfire Survival Explorer</h1>
       <p class="brand-sub">Research demo</p>
     </div>
+    <div class="regions" id="regions" role="group" aria-label="Region" hidden></div>
     <nav class="topnav" aria-label="Page">
       <button type="button" class="nav-item" id="about-open" aria-haspopup="dialog">About</button>
       {{paper_links}}
@@ -30,7 +31,6 @@
   </main>
 
   <aside class="panel" aria-label="Forecast controls and details">
-    <div class="regions" id="regions" role="group" aria-label="Region" hidden></div>
     <p class="note-warn" id="placeholder-note" hidden><span class="chip">Placeholder</span> Risk values in this build are a stand-in computed from past fires, not model output. The fires are real MODIS detections.</p>
     <p class="note-error" id="error-note" hidden></p>
 

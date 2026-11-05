@@ -50,7 +50,9 @@ NOTES = [
     "processing, checked against MPCFire's released 2025 data. Weather data (ERA5-Land) arrives about five days "
     "late, so its last day is repeated up to the forecast date; on a past date this changed the forecast very "
     "little. Fires after a date are known only up to the day shown.",
-    "Late-October dates lie outside the fire season the model was trained on (May to September).",
+    "Late-October and November dates lie outside the fire season the model was trained on (May to September). "
+    "There the forecasts still rank where fires occur well (AUC about 0.96 on the fires seen since), but overstate "
+    "how many: about seven times more fire pixels than observed.",
     "Probabilities are the model's raw outputs, without calibration.",
     "Fires are MODIS active-fire detections (MCD14A1, Terra, high confidence) on the same grid of about 5 km; for "
     "the newest days, NASA FIRMS near-real-time detections of the same satellite.",
@@ -140,7 +142,7 @@ def main() -> None:
         observed = ((z["fire_window"].astype(np.uint8) << 7) | first.astype(np.uint8)).astype(np.uint8)
         entry = {"model": model["id"], "date": date, "taus": taus, "risk": risk,
                  "observed": write(f"{folder}/observed.png", encode_png(observed)), "observed_days": max(taus)}
-        if "observed_through" in z.files:            # a live forecast: fires observed only up to a recent day
+        if "observed_through" in z.files and int(z["observed_days"]) < max(taus):   # live: fires known only up to a recent day
             entry.update(group="latest", observed_days=int(min(int(z["observed_days"]), max(taus))),
                          observed_through=str(z["observed_through"]))
         if "unobserved_bits" in z.files:              # days each pixel was cloud-covered (Terra could not see a fire)
