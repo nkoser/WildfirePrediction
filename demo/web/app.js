@@ -28,6 +28,37 @@
     return n;
   };
 
+  // ---- theme button: the reader's choice overrides the system setting and is remembered in this browser;
+  // choosing the system's own theme again drops the override. The head applies a stored choice before the
+  // first paint (build.py).
+  const THEME_KEY = 'wf-theme';
+  const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+  const root = document.documentElement;
+  const isDark = () => (root.getAttribute('data-theme') || (systemDark.matches ? 'dark' : 'light')) === 'dark';
+  const themeBtn = $('theme-toggle');
+  function showThemeButton() {
+    const dark = isDark();
+    themeBtn.setAttribute('aria-pressed', String(dark));
+    themeBtn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  themeBtn.addEventListener('click', () => {
+    const want = isDark() ? 'light' : 'dark';
+    const system = systemDark.matches ? 'dark' : 'light';
+    if (want === system) root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', want);
+    try {
+      if (want === system) localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, want);
+    } catch (err) { /* storage blocked: the choice lasts for this visit */ }
+    showThemeButton();
+  });
+  systemDark.addEventListener('change', showThemeButton);
+  showThemeButton();
+
+  const about = $('about');
+  $('about-open').addEventListener('click', () => about.showModal());
+  about.addEventListener('click', (ev) => { if (ev.target === about) about.close(); });   // a click on the backdrop
+
   function fail(err) {
     const n = $('error-note');
     n.textContent = `This page could not show the forecast: ${err.message}.`;
@@ -102,7 +133,7 @@
 
     // ---- colors -------------------------------------------------------------------------------------
     const colors = { theme: 'light', lut: new Uint32Array(256), before: 0, after: 0, css: {} };
-    const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const darkQuery = systemDark;
 
     function effectiveTheme() {
       const t = document.documentElement.getAttribute('data-theme');
@@ -457,17 +488,26 @@
     });
 
     // ---- panel --------------------------------------------------------------------------------------
-    function renderDates() {
+    function renderDates() {   // one row per year, in date order
       const box = $('dates');
       box.replaceChildren();
+      let chips = null, year = null;
       for (const d of datesFor(state.model)) {
-        const b = el('button', { type: 'button', class: 'date-btn', 'aria-pressed': String(d === state.date) }, fmtDate(d));
+        if (d.slice(0, 4) !== year) {
+          year = d.slice(0, 4);
+          chips = el('div', { class: 'date-chips' });
+          const row = el('div', { class: 'date-row' });
+          row.append(el('span', { class: 'date-year', 'aria-hidden': 'true' }, year), chips);
+          box.append(row);
+        }
+        const b = el('button', { type: 'button', class: 'date-btn', 'aria-pressed': String(d === state.date), 'aria-label': fmtDate(d) },
+          fmtDate(d, { year: undefined }));
         b.addEventListener('click', () => setDate(d));
-        box.append(b);
+        chips.append(b);
       }
       const fc = fcNow();
       $('window-text').textContent =
-        `Model input: daily maps from ${fmtDate(addDays(fc.date, 1 - manifest.input_days), { year: undefined })} to ${fmtDate(fc.date)} (${manifest.input_days} days).`;
+        `Model input: the ${manifest.input_days} days from ${fmtDate(addDays(fc.date, 1 - manifest.input_days), { year: undefined })} to ${fmtDate(fc.date)}.`;
     }
     function renderLead() {
       const fc = fcNow(), tau = state.tau, slider = $('lead'), n = fc.taus.length;
@@ -476,8 +516,9 @@
       slider.setAttribute('aria-valuetext', plural(tau, 'day'));
       $('lead-num').textContent = String(tau);
       $('lead-unit').textContent = tau === 1 ? 'day' : 'days';
-      $('lead-text').textContent =
-        `Probability of a first fire within ${plural(tau, 'day')} after ${fmtDate(fc.date)}, that is by ${fmtDate(addDays(fc.date, tau))}.`;
+      $('lead-text').textContent = tau === 1
+        ? `Fires counted on ${fmtDate(addDays(fc.date, 1))}.`
+        : `Fires counted from ${fmtDate(addDays(fc.date, 1), { year: undefined })} to ${fmtDate(addDays(fc.date, tau))}.`;
       const ticks = $('ticks');
       ticks.replaceChildren();
       for (const t of labelTaus(fc.taus)) {
@@ -526,7 +567,9 @@
       selBox.setStyle({ opacity: 1, color: colors.css.ink });
 
       const pts = fc.taus.filter((t) => e.raw[t]).map((t) => ({ t, F: qToF(e.raw[t][idx]) }));
-      const W = 320, H = 178, m = { l: 46, r: 10, t: 16, b: 28 };
+      const curve = $('curve');
+      const W = Math.max(240, curve.clientWidth), H = Math.max(120, curve.clientHeight);   // drawn at the box's size
+      const m = { l: 46, r: 10, t: 16, b: 30 };
       const tMax = fc.taus[fc.taus.length - 1];
       const yLo = Math.log10(Q.vmin), yHi = 0;
       const x = (t) => m.l + (t / tMax) * (W - m.l - m.r);
@@ -579,23 +622,31 @@
       });
       hit.addEventListener('mouseleave', () => hover.setAttribute('visibility', 'hidden'));
       hit.addEventListener('click', (ev) => { if (pts.length) setTau(nearestPt(ev).t); });
-      const curve = $('curve');
       curve.replaceChildren(s);
       curve.setAttribute('aria-busy', String(pts.length < fc.taus.length));
 
       $('loc-outcome').textContent = 'Observed: ' + observedText(e, idx, true).join(' ');
-      $('loc-hint').textContent = state.selRule || 'Click anywhere on the map to pick another location.';
+      const hint = $('loc-hint');
+      if (state.selRule) {
+        const how = el('button', { type: 'button', class: 'linklike' }, 'how it was chosen');
+        how.addEventListener('click', () => { about.showModal(); $('about-start-head').scrollIntoView({ block: 'start' }); });
+        hint.replaceChildren(document.createTextNode('An example location ('), how,
+          document.createTextNode('). Click the map to pick another.'));
+      } else {
+        hint.textContent = 'Click anywhere on the map to pick another location.';
+      }
       const table = $('vals');
       table.replaceChildren();
-      const head = el('tr');
-      head.append(el('th', { scope: 'col' }, 'Within'), el('th', { scope: 'col' }, 'Probability'));
-      table.append(head);
-      const rows = [...new Set([...TABLE_TAUS.filter((t) => fc.taus.includes(t)), state.tau])].sort((a, b) => a - b);
-      for (const t of rows) {
-        const tr = el('tr', t === state.tau ? { class: 'on' } : {});
-        tr.append(el('td', {}, plural(t, 'day')), el('td', {}, e.raw[t] ? pct(qToF(e.raw[t][idx])) : '…'));
-        table.append(tr);
+      const cols = [...new Set([...TABLE_TAUS.filter((t) => fc.taus.includes(t)), state.tau])].sort((a, b) => a - b);
+      const head = el('tr'), vals = el('tr');
+      head.append(el('th', { scope: 'col' }, 'Within (days)'));
+      vals.append(el('th', { scope: 'row' }, 'Probability'));
+      for (const t of cols) {
+        const on = t === state.tau ? { class: 'on' } : {};
+        head.append(el('th', Object.assign({ scope: 'col' }, on), String(t)));
+        vals.append(el('td', on, e.raw[t] ? pct(qToF(e.raw[t][idx])) : '…'));
       }
+      table.append(head, vals);
     }
 
     // A starting location that shows what a risk curve is for: below 1% for the first lead time, the highest
@@ -610,16 +661,18 @@
         const o = e.obs[i];
         if ((o >> 7) === 0 && (o & 127) > 0 && first[i] > 0 && first[i] < cap && last[i] > bestQ) { bestQ = last[i]; best = i; }
       }
-      let rule = `Starting location: among pixels with no fire in the ${manifest.input_days} days before the forecast date `
-        + `and a fire observed afterwards, the one with the highest risk within ${plural(taus[taus.length - 1], 'day')} `
-        + `while its risk within ${plural(taus[0], 'day')} stays below 1%. Click anywhere on the map to pick another location.`;
+      let rule = `The page opens on an example pixel: among pixels with no fire in the ${manifest.input_days} days `
+        + `before the forecast date and a fire observed afterwards, the one with the highest risk within `
+        + `${plural(taus[taus.length - 1], 'day')} while its risk within ${plural(taus[0], 'day')} stays below 1%. `
+        + `Click anywhere on the map to pick another location.`;
       if (best < 0) {
         const raw = e.raw[state.tau];
         for (let i = 0; i < raw.length; i++) if (raw[i] > bestQ && (e.obs[i] >> 7) === 0) { bestQ = raw[i]; best = i; }
-        rule = 'Starting location: the highest risk at this lead time among pixels with no fire before the forecast date. '
-          + 'Click anywhere on the map to pick another location.';
+        rule = 'The page opens on the pixel with the highest risk at the chosen lead time among pixels with no fire before '
+          + 'the forecast date. Click anywhere on the map to pick another location.';
       }
       state.selRule = best < 0 ? null : rule;
+      if (best >= 0) $('about-start').textContent = rule;
       return best < 0 ? null : { row: Math.floor(best / G.width), col: best % G.width };
     }
 
@@ -672,6 +725,11 @@
     }
 
     $('lead').addEventListener('input', (ev) => setTau(fcNow().taus[Number(ev.target.value)]));
+    let resizeFrame = 0;
+    new ResizeObserver(() => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(renderSelection);
+    }).observe($('curve'));
     $('show-before').addEventListener('change', (ev) => { state.before = ev.target.checked; fireLayer.repaint(); });
     $('show-after').addEventListener('change', (ev) => { state.after = ev.target.checked; fireLayer.repaint(); });
     darkQuery.addEventListener('change', applyTheme);

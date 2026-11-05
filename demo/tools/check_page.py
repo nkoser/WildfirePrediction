@@ -3,9 +3,11 @@ Chromium at a laptop size.
 
 Fails on any console error or warning, page error, failed request, or request to another origin, and when
 the page does not behave: it must open on the manifest's default view, load every lead time of the shown
-date (the risk curve then has one point per lead time), switch date, move to the longest lead time, and
-select a location on a click. Prints how much the first view and the full date download, and writes
-screenshots of both themes and of the changed state.
+date (the risk curve then has one point per lead time), switch date, move to the longest lead time, select a
+location on a click, switch theme with the top-bar button, open and close the About dialog, and fit the
+panel without scrolling at the check size and at --small. Prints how much the first view and the full date
+download and the lowest window height at which the panel still fits, and writes screenshots of both
+themes, the changed state, the About dialog and the small window.
 
     PLAYWRIGHT_BROWSERS_PATH=<browsers> python -I demo/tools/check_page.py demo/dist/site --shots <dir> [--url <site>]
 """
@@ -41,14 +43,22 @@ def curve_points(page) -> int:
     return len(pts.split())
 
 
+def panel_fits(page) -> tuple[bool, int, int]:
+    """The panel shows everything without scrolling (one pixel of slack for rounding)."""
+    h = page.evaluate("(() => { const p = document.querySelector('.panel'); return [p.scrollHeight, p.clientHeight]; })()")
+    return h[0] <= h[1] + 1, h[0], h[1]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("site", type=Path, help="the built site directory (index.html, data/)")
     ap.add_argument("--shots", type=Path, required=True)
     ap.add_argument("--width", type=int, default=1440)
     ap.add_argument("--height", type=int, default=900)
+    ap.add_argument("--small", default="1280x720", help="a smaller laptop window that must also fit without scrolling")
     ap.add_argument("--url", help="check this deployed copy of the site instead of serving the directory locally")
     args = ap.parse_args()
+    small_w, small_h = (int(v) for v in args.small.split("x"))
     args.shots.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((args.site / "data" / "manifest.json").read_text())
     dates = sorted({f["date"] for f in manifest["forecasts"]})
@@ -120,11 +130,66 @@ def main() -> None:
             page.wait_for_timeout(200)
             expect(page.locator("#curve .hover").get_attribute("visibility") == "visible", "curve hover shows a value")
             page.locator("#curve").screenshot(path=str(args.shots / "curve-hover.png"))
-            page.locator("#vals").scroll_into_view_if_needed()
-            page.locator(".panel").screenshot(path=str(args.shots / "panel-lower.png"))
+            page.locator(".panel").screenshot(path=str(args.shots / "panel.png"))
+            fits, need, have = panel_fits(page)
+            expect(fits, f"panel fits {args.width}x{args.height} without scrolling ({need} of {have} px)")
             page.mouse.move(args.width * 0.35, args.height * 0.45)
             page.wait_for_timeout(600)
             page.screenshot(path=str(args.shots / "changed.png"))
+
+            # theme button: light system -> dark override -> back to the system theme
+            ramp = page.locator("#ramp").get_attribute("style")
+            page.locator("#theme-toggle").click()
+            page.wait_for_timeout(300)
+            expect(page.evaluate("document.documentElement.getAttribute('data-theme')") == "dark"
+                   and page.locator("#theme-toggle").get_attribute("aria-pressed") == "true"
+                   and page.locator("#ramp").get_attribute("style") != ramp,
+                   "theme button switches to dark and recolors the map key")
+            page.screenshot(path=str(args.shots / "toggled-dark.png"))
+            page.reload()
+            page.wait_for_function("window.__wfReady === true", timeout=60000)
+            expect(page.evaluate("document.documentElement.getAttribute('data-theme')") == "dark",
+                   "the theme choice survives a reload")
+            page.locator("#theme-toggle").click()
+            page.wait_for_timeout(300)
+            expect(page.evaluate("document.documentElement.getAttribute('data-theme')") is None,
+                   "choosing the system theme again drops the override")
+
+            # About dialog
+            page.locator("#about-open").click()
+            page.wait_for_timeout(200)
+            expect(page.locator("#about").evaluate("d => d.open") and page.locator("#notes li").count() > 0,
+                   "About opens with the notes")
+            page.screenshot(path=str(args.shots / "about.png"))
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
+            expect(not page.locator("#about").evaluate("d => d.open"), "Escape closes About")
+
+            # lowest window height at which the panel still fits, from the check size down in 20 px steps
+            lowest = None
+            for h in range(args.height, 479, -20):
+                page.set_viewport_size({"width": args.width, "height": h})
+                page.wait_for_timeout(150)
+                if not panel_fits(page)[0]:
+                    break
+                lowest = h
+            print(f"[check] the panel fits without scrolling down to a window height of {lowest} px "
+                  f"(at {args.width} px wide, 20 px steps)", flush=True)
+            ctx.close()
+
+            # a smaller laptop window, opened fresh
+            ctx = browser.new_context(viewport={"width": small_w, "height": small_h}, color_scheme="light")
+            page = ctx.new_page()
+            page.on("console", lambda m: errors.append(f"console {m.type}: {m.text}") if m.type in ("error", "warning") else None)
+            page.on("pageerror", lambda e: errors.append(f"page error: {e}"))
+            page.on("requestfailed", lambda r: failed.append(f"{r.url}: {r.failure}"))
+            page.goto(start)
+            page.wait_for_function(f"window.__wfComplete === '{default}'", timeout=120000)
+            page.wait_for_timeout(400)
+            fits, need, have = panel_fits(page)
+            expect(fits, f"panel fits {small_w}x{small_h} without scrolling ({need} of {have} px)")
+            print("[check] map zoom at", f"{small_w}x{small_h}:", page.evaluate("document.querySelector('.leaflet-control-scale-line').textContent"), flush=True)
+            page.screenshot(path=str(args.shots / "small.png"))
             ctx.close()
         browser.close()
     if srv:

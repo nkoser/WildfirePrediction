@@ -1,27 +1,23 @@
-"""Assemble the demo from demo/web, demo/vendor and a data directory written by export_web.py:
-
-    <out>/site/          the public site: index.html, data/ (manifest and layers), licenses/ (Leaflet, the
-                         fonts), README.md, .nojekyll. Static files only, so any static host serves it as
-                         is (GitHub Pages, a storage bucket).
-    <out>/artifact/wildfire-survival-explorer.html
-                         the same page as a fragment (title, style, body, scripts) for a preview host that
-                         supplies its own <html>/<head>/<body> skeleton; publish it with <out>/site/data
-                         next to it.
+"""Assemble the public site from demo/web, demo/vendor and a data directory written by export_web.py into
+<out>/site/: index.html, data/ (manifest and layers), licenses/ (Leaflet, the fonts), README.md, .nojekyll.
+Static files only, so any static host serves it as is (GitHub Pages, a storage bucket).
 
 The page inlines Leaflet, the fonts and the basemap; it fetches only data/manifest.json and the layers the
-manifest names, on demand. Before anything is written, the page and the manifest are checked for
-  * any http(s) URL outside a short allow-list, so the page makes no third-party request;
+manifest names, on demand. The top bar links the paper on arXiv once --arxiv names it; until then it shows
+a placeholder. Before anything is written, the page and the manifest are checked for
+  * any http(s) URL outside a short allow-list (plus the --arxiv link), so the page makes no third-party
+    request;
   * local paths, and wording about the paper being under submission or review;
   * any pattern given with --forbid (names or wording that must stay off the public page).
 
     python -I demo/tools/build.py --data <export dir> [--out demo/dist] [--forbid PATTERN ...] [--noindex]
+                                  [--arxiv https://arxiv.org/abs/<id>]
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
-import math
 import re
 import shutil
 from pathlib import Path
@@ -47,8 +43,19 @@ Montserrat and Roboto (SIL Open Font License 1.1). The basemap is from Natural E
 """
 ALLOWED_URLS = {"https://leafletjs.com", "http://www.w3.org/2000/svg"}
 FORBIDDEN = [r"under (double-blind )?(submission|review)", r"/mnt/", r"/home/", r"/raid/", r"/data/wildfire"]
-# limits of the preview host, so the build says when the preview needs more than one publish
-PREVIEW_FILE_LIMIT, PREVIEW_PUBLISH_BYTES, PREVIEW_PUBLISH_FILES = 15e6, 64e6, 255
+ARXIV_RE = r"https://arxiv\.org/abs/\d{4}\.\d{4,5}(v\d+)?"
+# A reader's theme choice (the top-bar button, app.js) applied before the first paint, so a reload does not
+# flash the system theme first.
+THEME_INIT = ("<script>try{var t=localStorage.getItem('wf-theme');"
+              "if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>")
+
+
+def paper_links(arxiv: str | None) -> str:
+    """The top bar's paper link: arXiv once the paper is public, a placeholder until then."""
+    if arxiv:
+        return f'<a class="nav-item" href="{arxiv}" target="_blank" rel="noopener">arXiv</a>'
+    return ('<span class="nav-item nav-soon" title="The paper\'s arXiv link goes here once it is public">'
+            'arXiv<span class="soon">soon</span></span>')
 
 
 def fonts_css() -> str:
@@ -74,12 +81,12 @@ def json_script(id_: str, text: str) -> str:
     return f'<script type="application/json" id="{id_}">{text}</script>'
 
 
-def check(texts: dict[str, str], forbidden: list[str]) -> list[str]:
+def check(texts: dict[str, str], forbidden: list[str], allowed: set[str]) -> list[str]:
     problems = []
     for name, text in texts.items():
         visible = re.sub(r"data:[a-z0-9/+.-]+;base64,[A-Za-z0-9+/=]+", "data:", text)
         for url in sorted(set(re.findall(r"https?://[^\s\"'<>)\\]+", visible))):
-            if url.rstrip("/.,;") not in ALLOWED_URLS:
+            if url.rstrip("/.,;") not in allowed:
                 problems.append(f"{name}: external URL: {url}")
         for pat in forbidden:
             m = re.search(pat, visible, flags=re.IGNORECASE)
@@ -96,19 +103,24 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=DEMO / "dist")
     ap.add_argument("--forbid", action="append", default=[], help="regular expression the page must not contain")
     ap.add_argument("--noindex", action="store_true", help="ask search engines not to index the page")
+    ap.add_argument("--arxiv", help="the paper's arXiv abstract page (https://arxiv.org/abs/<id>); a placeholder until given")
     args = ap.parse_args()
+    if args.arxiv and not re.fullmatch(ARXIV_RE, args.arxiv):
+        raise SystemExit(f"--arxiv {args.arxiv!r} is not an arXiv abstract URL (https://arxiv.org/abs/<id>)")
     manifest = args.data / "manifest.json"
     if not manifest.is_file():
         raise SystemExit(f"{manifest} not found; run export_web.py first")
 
     style = "\n".join([fonts_css(), leaflet_css(), (DEMO / "web" / "style.css").read_text()])
     body = (DEMO / "web" / "template.html").read_text()
+    if body.count("{{paper_links}}") != 1:
+        raise SystemExit("template.html must hold the {{paper_links}} slot once")
+    body = body.replace("{{paper_links}}", paper_links(args.arxiv))
     scripts = "\n".join([
         json_script("wf-basemap", args.basemap.read_text()),
         "<script>" + (DEMO / "vendor" / "leaflet-1.9.4" / "leaflet.js").read_text() + "</script>",
         "<script>" + (DEMO / "web" / "app.js").read_text() + "</script>",
     ])
-    fragment = f"<title>{TITLE}</title>\n<style>\n{style}\n</style>\n{body}\n{scripts}\n"
     icon = "data:image/svg+xml;base64," + base64.b64encode(ICON_SVG.encode()).decode("ascii")
     head = "\n".join([
         '<meta charset="utf-8">',
@@ -117,11 +129,13 @@ def main() -> None:
         f'<meta name="description" content="{DESCRIPTION}">',
         *(['<meta name="robots" content="noindex">'] if args.noindex else []),
         f'<link rel="icon" href="{icon}">',
+        THEME_INIT,
     ])
     document = (f"<!doctype html>\n<html lang=\"en\">\n<head>\n{head}\n<style>\n{style}\n</style>\n</head>\n"
                 f"<body>\n{body}\n{scripts}\n</body>\n</html>\n")
 
-    problems = check({"page": document, "manifest": manifest.read_text()}, FORBIDDEN + args.forbid)
+    allowed = ALLOWED_URLS | ({args.arxiv} if args.arxiv else set())
+    problems = check({"page": document, "manifest": manifest.read_text()}, FORBIDDEN + args.forbid, allowed)
     if problems:
         raise SystemExit("build check failed:\n  " + "\n  ".join(problems))
 
@@ -135,24 +149,18 @@ def main() -> None:
     for name, (folder, file) in LICENSES.items():
         (site / "licenses").mkdir(exist_ok=True)
         shutil.copyfile(DEMO / "vendor" / folder / file, site / "licenses" / name)
-    art = args.out / "artifact" / "wildfire-survival-explorer.html"
-    art.parent.mkdir(parents=True, exist_ok=True)
-    art.write_text(fragment)
+    stale = args.out / "artifact"   # the preview fragment of earlier builds; nothing reads it any more
+    if stale.exists():
+        shutil.rmtree(stale)
 
     files = [p for p in (site / "data").rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in files)
     big = max(p.stat().st_size for p in files)
     print(f"[build] {site}: index.html {(site / 'index.html').stat().st_size / 1e6:.2f} MB, "
           f"data/ {len(files)} files, {total / 1e6:.1f} MB (largest {big / 1e6:.2f} MB)")
-    print(f"[build] {art} {art.stat().st_size / 1e6:.2f} MB")
-    publishes = max(math.ceil(total / PREVIEW_PUBLISH_BYTES), math.ceil(len(files) / PREVIEW_PUBLISH_FILES))
-    if big > PREVIEW_FILE_LIMIT:
-        print(f"[build] a data file is over the preview host's {PREVIEW_FILE_LIMIT / 1e6:.0f} MB per-file limit")
-    elif publishes > 1:
-        print(f"[build] the preview needs {publishes} publishes to hold data/ "
-              f"(at most {PREVIEW_PUBLISH_FILES} files and {PREVIEW_PUBLISH_BYTES / 1e6:.0f} MB each)")
     print("[build] checks passed: no external URL outside the allow-list, no forbidden pattern"
-          + ("; the page asks search engines not to index it" if args.noindex else ""))
+          + ("; the page asks search engines not to index it" if args.noindex else "")
+          + (f"; links the paper at {args.arxiv}" if args.arxiv else "; arXiv link is a placeholder"))
 
 
 if __name__ == "__main__":

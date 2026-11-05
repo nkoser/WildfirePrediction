@@ -3,7 +3,7 @@
 The paper's public, interactive results page: a static site that goes online with the arXiv version, so
 anyone can explore the forecasts, and later the front end of a hosted model.
 
-**Status (2026-11-04):** the page shows real model output: `risk_map.py` maps from a Contagion-STS (three
+**Status (2026-11-05):** the page shows real model output: `risk_map.py` maps from a Contagion-STS (three
 seeds) for seven test-period forecast dates, every lead time from 1 to 30 days. Another model is a re-export
 of its `risk_map.py` files with a new label; the page code does not change. `tools/make_placeholder.py`
 makes stand-in data in the same format when no model output is at hand.
@@ -20,6 +20,13 @@ makes stand-in data in the same format when no model output is at hand.
 - Hover for the value under the cursor; click for the pixel's risk curve over all lead times, its values
   and the observed outcome. Hovering the curve reads a lead time; clicking it moves the map there.
 - Following the paper's limitations, no predicted-arrival maps and no ignition/spread split.
+- Everything fits a laptop window without scrolling (checked down to 660 px of window height at 1440 px
+  wide, and at 1280 × 720): the panel holds the controls and the risk curve, which takes the height that is
+  left; the explanations, the starting-location rule, the manifest's notes and the credits sit in the About
+  dialog of the top bar.
+- The top bar also holds the paper's arXiv link (a placeholder until `build.py --arxiv` names it) and a
+  light/dark button. The reader's choice overrides the system theme and is kept in the browser's
+  `localStorage`; choosing the system's own theme again drops the override.
 
 ## Layout
 
@@ -29,7 +36,7 @@ demo/
   tools/         make_placeholder.py, make_basemap.py, export_web.py, build.py, check_page.py, common.py
   web/           template.html, style.css, app.js, basemap.json (Natural Earth 1:50m, generated)
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), Montserrat and Roboto fonts (SIL OFL 1.1), with their licenses
-  dist/          build output, not in git: site/ (the deployable site), artifact/ (a preview fragment)
+  dist/          build output, not in git: site/ (the deployable site)
 ```
 
 ## Build
@@ -41,7 +48,8 @@ Python 3.12 with numpy and pillow; the check also needs playwright with Chromium
 python -I demo/tools/export_web.py /data/Wildfire/figures/risk_maps/risk_cg2w_ema_*.npz \
     --model-id contagion-sts --model-label Contagion-STS \
     --model-detail "ensemble of 3 seeds, raw probabilities" --out work/data
-# 2. site: dist/site/ (index.html, data/ copied from step 1, .nojekyll) and dist/artifact/*.html (fragment)
+# 2. site: dist/site/ (index.html, data/ copied from step 1, .nojekyll, licenses/, README.md);
+#    --arxiv https://arxiv.org/abs/<id> turns the top bar's placeholder into the paper's link
 python -I demo/tools/build.py --data work/data
 # 3. serve dist/site on 127.0.0.1 and drive it in headless Chromium; fails on any script error,
 #    failed request or request to another origin, or when the page does not respond as expected
@@ -97,7 +105,7 @@ page without code changes. This is the draft contract for that service.
 | `models` | `id`, `label`, `detail` |
 | `forecasts[]` | `model`, `date`, `taus`, `risk[tau]` (path of a PNG), `observed` (path of a PNG: bit 7 = fire in the input window, bits 0-6 = first fire day after the date), `observed_days` |
 | `placeholder` | true when any input was a placeholder; the page then shows a banner |
-| `notes` | footnotes shown under the panel |
+| `notes` | notes on the model and data, shown in the About dialog |
 | `default` | date and lead time the page opens on |
 
 ## Checks
@@ -107,3 +115,7 @@ page without code changes. This is the draft contract for that service.
   header, the SVG namespace); `check_page.py` fails on any request to another origin.
 - `build.py` also fails on local paths and on wording about the paper's review status in the page or the
   manifest; `--forbid PATTERN` adds patterns of its own.
+- `check_page.py` drives the built site in headless Chromium: opening view, every lead time loaded, date
+  switch, slider, map click, curve hover, theme button (including a reload), About dialog, and a panel that
+  fits without scrolling at 1440 × 900 and at `--small` (default 1280 × 720). It prints the lowest window
+  height at which the panel still fits.

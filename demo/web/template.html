@@ -4,7 +4,14 @@
       <h1 class="brand-title">Wildfire Survival Explorer</h1>
       <p class="brand-sub">Research demo</p>
     </div>
-    <!-- the paper's links (paper, arXiv, BibTeX) go here, as a nav, once the paper is public -->
+    <nav class="topnav" aria-label="Page">
+      <button type="button" class="nav-item" id="about-open" aria-haspopup="dialog">About</button>
+      {{paper_links}}
+      <button type="button" class="nav-icon" id="theme-toggle" aria-pressed="false" aria-label="Dark mode" title="Switch to dark mode">
+        <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a8.5 8.5 0 1 0 11.1 11.1z" fill="currentColor"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.6" fill="currentColor"/><g stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1.8v2.4M12 19.8v2.4M1.8 12h2.4M19.8 12h2.4M4.8 4.8l1.7 1.7M17.5 17.5l1.7 1.7M4.8 19.2l1.7-1.7M17.5 6.5l1.7-1.7"/></g></svg>
+      </button>
+    </nav>
   </header>
 
   <main class="map-wrap">
@@ -22,8 +29,6 @@
   </main>
 
   <aside class="panel" aria-label="Forecast controls and details">
-    <p class="lede">One forecast gives every pixel a full risk curve: the probability of its first fire within any number of days after the forecast date. The map reads that curve at the lead time you choose.</p>
-
     <p class="note-warn" id="placeholder-note" hidden><span class="chip">Placeholder</span> Risk values in this build are a stand-in computed from past fires, not model output. The fires are real MODIS detections.</p>
     <p class="note-error" id="error-note" hidden></p>
 
@@ -34,25 +39,38 @@
     </section>
 
     <section class="block" aria-labelledby="h-lead">
-      <h2 id="h-lead">Lead time</h2>
-      <p class="lead-readout"><span class="lead-num" id="lead-num"></span> <span class="lead-unit" id="lead-unit"></span></p>
+      <div class="block-head">
+        <h2 id="h-lead">Lead time</h2>
+        <p class="lead-readout"><span class="lead-num" id="lead-num"></span> <span class="lead-unit" id="lead-unit"></span></p>
+      </div>
       <input type="range" id="lead" min="0" max="0" step="1" value="0" aria-labelledby="h-lead" aria-describedby="lead-text">
       <div class="ticks" id="ticks" aria-hidden="true"></div>
       <p class="sub" id="lead-text"></p>
     </section>
 
-    <section class="block" aria-labelledby="h-loc">
-      <h2 id="h-loc">Selected location</h2>
-      <p class="loc" id="loc-name"></p>
+    <section class="block block-loc" aria-labelledby="h-loc">
+      <div class="block-head">
+        <h2 id="h-loc">Selected location</h2>
+        <p class="loc" id="loc-name"></p>
+      </div>
       <div class="curve" id="curve"></div>
       <p class="sub" id="loc-outcome"></p>
       <table class="vals" id="vals"></table>
       <p class="sub hint" id="loc-hint">Click anywhere on the map to pick another location.</p>
     </section>
-
-    <footer class="foot">
-      <ul id="notes"></ul>
-      <p class="credit">Basemap: Natural Earth.</p>
-    </footer>
   </aside>
 </div>
+
+<dialog class="about" id="about" aria-labelledby="about-title">
+  <form method="dialog" class="about-close"><button type="submit" class="close-btn" aria-label="Close">&#215;</button></form>
+  <h2 id="about-title">About this demo</h2>
+  <p>One forecast gives every pixel a full risk curve: the probability of its first fire within any number of days after the forecast date. The map reads that curve at the lead time you choose; the panel shows the whole curve for one location.</p>
+  <h3>Reading the map</h3>
+  <p>Colors give the probability of a first fire in the pixel within the lead time. Black pixels had a fire in the 30 days before the forecast date, which the model saw. Blue pixels burned after the forecast date, within the lead time: what the forecast is checked against.</p>
+  <h3 id="about-start-head">Starting location</h3>
+  <p id="about-start">The page opens on an example location; click anywhere on the map to pick another.</p>
+  <h3>Model and data</h3>
+  <ul id="notes"></ul>
+  <h3>Credits</h3>
+  <p>Basemap: Natural Earth (public domain). Map: Leaflet. Fonts: Montserrat and Roboto (SIL Open Font License). License texts are in the site's <code>licenses/</code> folder.</p>
+</dialog>
